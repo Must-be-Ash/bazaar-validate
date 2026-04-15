@@ -47,7 +47,7 @@ Per teammate: "extra validation, which is basically a $0.001 min when using USDC
 - [x] **x402Version must be 2**
 - [x] **`accepts` array present and non-empty**
 - [x] **Each `accepts` item has required fields:** `scheme`, `network`, `amount`, `asset`, `payTo`, `maxTimeoutSeconds`
-- [x] **Scheme is `"exact"`**
+- [x] **Scheme is `"exact"` or `"upto"`**
 - [x] **Network is supported** — `base` (`eip155:8453`), `base-sepolia` (`eip155:84532`)
 - [x] **Asset is USDC** — correct contract address per network:
   - Base Mainnet: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
@@ -85,7 +85,7 @@ These are things we can ship immediately to make the current Node.js-only tool m
 - [x] $0.001 USDC minimum (check `amount` >= 1000 in `accepts` items)
 - [x] HTTPS requirement on resource URL
 - [x] USDC asset address validation per network
-- [x] `scheme` must be `"exact"`
+- [x] `scheme` must be `"exact"` or `"upto"`
 - [x] All required `accepts` fields present
 - [x] v2 structure: `x402Version: 2`, top-level `accepts` array, top-level `extensions`
 
@@ -193,7 +193,7 @@ Fix the wizard's generated code to match the actual bazaar extension setup from 
 
 - [x] Dockerfile for the Go validation server
 - [x] Health check endpoint (`GET /health`)
-- [ ] Deploy on same host or internal network as Next.js app
+- [x] Deployed to Fly.io: `https://bazaar-go-validator.fly.dev`
 
 ### 5.2 Configuration
 

@@ -34,7 +34,7 @@ export const CHECK_LABELS: Record<string, string> = {
   endpoint_reachable: "Endpoint is reachable",
   returns_402: "Returns HTTP 402",
   valid_payment_requirements: "Valid x402 v2 payment requirements",
-  scheme_exact: 'Scheme is "exact"',
+  scheme_valid: "Valid payment scheme",
   amount_valid: "Price meets $0.001 USDC minimum",
   network_supported: "Network is supported",
   asset_usdc: "Asset is USDC",

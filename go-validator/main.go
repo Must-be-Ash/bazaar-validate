@@ -280,12 +280,13 @@ func validateAccepts(accepts []interface{}) []Check {
 		payTo, _ := item["payTo"].(string)
 		maxTimeout, hasTimeout := item["maxTimeoutSeconds"]
 
-		// Scheme must be "exact"
+		// Scheme must be "exact" or "upto"
+		validScheme := scheme == "exact" || scheme == "upto"
 		checks = append(checks, Check{
 			Check:    fmt.Sprintf("%s.scheme", prefix),
-			Passed:   scheme == "exact",
-			Detail:   ternary(scheme == "exact", "Scheme is exact", fmt.Sprintf("Scheme is %q — must be \"exact\"", scheme)),
-			Expected: "exact",
+			Passed:   validScheme,
+			Detail:   ternary(validScheme, fmt.Sprintf("Scheme is %s", scheme), fmt.Sprintf("Scheme is %q — must be \"exact\" or \"upto\"", scheme)),
+			Expected: "exact or upto",
 			Actual:   scheme,
 		})
 

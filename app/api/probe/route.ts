@@ -195,12 +195,13 @@ export async function POST(req: NextRequest) {
             const payTo = first.payTo as string;
 
             // Scheme check
+            const validScheme = scheme === "exact" || scheme === "upto";
             diagnostics.push({
-              check: "scheme_exact",
-              passed: scheme === "exact",
-              detail: scheme === "exact"
-                ? 'Scheme is "exact"'
-                : `Scheme is "${scheme}" — must be "exact"`,
+              check: "scheme_valid",
+              passed: validScheme,
+              detail: validScheme
+                ? `Scheme is "${scheme}"`
+                : `Scheme is "${scheme}" — must be "exact" or "upto"`,
             });
 
             // Detect v1 amount field
