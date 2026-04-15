@@ -10,9 +10,9 @@ interface StepStackProps {
 }
 
 const stacks: { id: Stack; desc: string }[] = [
-  { id: "node", desc: "x402-express middleware" },
-  { id: "go", desc: "github.com/coinbase/x402/go/pkg/gin middleware" },
-  { id: "python", desc: "x402[fastapi] middleware" },
+  { id: "node", desc: "@x402/express + @x402/extensions/bazaar" },
+  { id: "go", desc: "github.com/coinbase/x402/go with bazaar extensions" },
+  { id: "python", desc: "x402 with PaymentMiddlewareASGI + bazaar extensions" },
 ];
 
 export function StepStack({ selected, onSelect }: StepStackProps) {

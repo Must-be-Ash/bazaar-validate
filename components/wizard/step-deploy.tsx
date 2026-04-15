@@ -2,14 +2,16 @@
 
 import { Stack, generateTestPaymentCode } from "@/lib/code-templates";
 import { CopyButton } from "@/components/wizard/copy-button";
+import { GlowButton } from "@/components/ui/glow-button";
 
 interface StepDeployProps {
   stack: Stack;
   endpointUrl: string;
   method: string;
+  onRevalidate?: () => void;
 }
 
-export function StepDeploy({ stack, endpointUrl, method }: StepDeployProps) {
+export function StepDeploy({ stack, endpointUrl, method, onRevalidate }: StepDeployProps) {
   const testCode = generateTestPaymentCode(stack, endpointUrl, method);
 
   return (
@@ -45,11 +47,16 @@ export function StepDeploy({ stack, endpointUrl, method }: StepDeployProps) {
         </div>
 
         <div className="bg-muted border border-border rounded-lg p-4">
-          <p className="text-sm font-medium mb-2">3. Validate again</p>
-          <p className="text-xs text-muted-foreground">
-            After your first successful transaction, come back to this validator
-            and check your endpoint again. It should now appear in the Bazaar.
+          <p className="text-sm font-medium mb-2">3. Re-validate</p>
+          <p className="text-xs text-muted-foreground mb-3">
+            After your first successful transaction, re-validate to confirm
+            you&apos;re indexed.
           </p>
+          {onRevalidate && (
+            <GlowButton variant="success" onClick={onRevalidate}>
+              Re-validate Endpoint
+            </GlowButton>
+          )}
         </div>
 
         <div className="bg-warning/10 border border-warning/30 rounded-lg p-4">

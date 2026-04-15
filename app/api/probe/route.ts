@@ -36,6 +36,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Localhost detection
+    const hostname = parsedUrl.hostname;
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+      return NextResponse.json(
+        {
+          error: "Cannot reach localhost from our server. Expose your endpoint with: ngrok http <port>",
+        },
+        { status: 400 }
+      );
+    }
+
     const validMethods = ["GET", "POST", "PUT", "DELETE"];
     const httpMethod = method.toUpperCase();
     if (!validMethods.includes(httpMethod)) {
@@ -104,6 +115,22 @@ export async function POST(req: NextRequest) {
             }`,
       });
 
+      // Check for HTML paywall instead of JSON
+      const contentType = res.headers.get("content-type") || "";
+      if (returns402 && contentType.includes("text/html")) {
+        diagnostics.push({
+          check: "valid_payment_requirements",
+          passed: false,
+          detail: "Endpoint returned HTML instead of JSON. The 402 response must be JSON with x402 payment requirements, not an HTML paywall page. Check that your x402 middleware is sending JSON responses.",
+        });
+        // Skip further checks — can't parse HTML as payment requirements
+        return NextResponse.json({
+          reachable, statusCode, returns402, paymentRequirements,
+          hasBazaarExtension, bazaarExtensionData, x402Version,
+          rawHeaders, rawBody, diagnostics,
+        });
+      }
+
       // Parse body as JSON and check for v2 payment requirements
       if (returns402) {
         try {
@@ -120,15 +147,123 @@ export async function POST(req: NextRequest) {
             paymentRequirements = parsed;
           }
 
-          diagnostics.push({
-            check: "valid_payment_requirements",
-            passed: hasValidPR,
-            detail: hasValidPR
-              ? `Valid x402 v2 payment requirements found with ${accepts!.length} payment method(s)`
-              : !isV2
-                ? `Response has x402Version ${x402Version ?? "missing"} — this tool validates v2 endpoints only. Expected x402Version: 2.`
-                : "Response body does not contain a valid v2 accepts array. Expected JSON with { x402Version: 2, accepts: [...] }.",
-          });
+          // Detect v1 patterns
+          if (!isV2) {
+            if (parsed.paymentRequirements) {
+              diagnostics.push({
+                check: "valid_payment_requirements",
+                passed: false,
+                detail: "Response uses paymentRequirements (v1 pattern). v2 uses top-level accepts array. Upgrade to v2.",
+              });
+            } else if (x402Version === 1) {
+              diagnostics.push({
+                check: "valid_payment_requirements",
+                passed: false,
+                detail: "x402Version is 1 — this tool validates v2 endpoints only. Upgrade your x402 middleware to v2.",
+              });
+            } else {
+              diagnostics.push({
+                check: "valid_payment_requirements",
+                passed: false,
+                detail: `x402Version is ${x402Version ?? "missing"} — expected 2.`,
+              });
+            }
+          } else {
+            diagnostics.push({
+              check: "valid_payment_requirements",
+              passed: hasValidPR,
+              detail: hasValidPR
+                ? `Valid x402 v2 payment requirements with ${accepts!.length} payment method(s)`
+                : "Missing or empty accepts array in v2 response.",
+            });
+          }
+
+          // Validate accepts items (USDC, price, scheme, etc.)
+          if (hasValidPR && accepts) {
+            const USDC_ADDRESSES: Record<string, string> = {
+              "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+              "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            };
+
+            const first = accepts[0] as Record<string, unknown>;
+            const scheme = first.scheme as string;
+            const network = first.network as string;
+            const amount = first.amount as string;
+            const asset = first.asset as string;
+            const payTo = first.payTo as string;
+
+            // Scheme check
+            diagnostics.push({
+              check: "scheme_exact",
+              passed: scheme === "exact",
+              detail: scheme === "exact"
+                ? 'Scheme is "exact"'
+                : `Scheme is "${scheme}" — must be "exact"`,
+            });
+
+            // Detect v1 amount field
+            if (!amount && first.maxAmountRequired) {
+              diagnostics.push({
+                check: "amount_valid",
+                passed: false,
+                detail: 'Found maxAmountRequired (v1 field name). v2 uses "amount".',
+              });
+            } else {
+              const amountNum = parseInt(amount || "0", 10);
+              diagnostics.push({
+                check: "amount_valid",
+                passed: amountNum >= 1000,
+                detail: amountNum >= 1000
+                  ? `Amount ${amount} meets $0.001 USDC minimum`
+                  : `Amount ${amount || "missing"} is below $0.001 minimum (1000 atomic units)`,
+              });
+            }
+
+            // Network check
+            const knownNetwork = network in USDC_ADDRESSES;
+            diagnostics.push({
+              check: "network_supported",
+              passed: knownNetwork,
+              detail: knownNetwork
+                ? `Network ${network} is supported`
+                : `Network "${network}" is not a supported network`,
+            });
+
+            // Asset is USDC
+            const expectedAsset = USDC_ADDRESSES[network] || "";
+            const assetMatch = asset?.toLowerCase() === expectedAsset.toLowerCase();
+            diagnostics.push({
+              check: "asset_usdc",
+              passed: assetMatch,
+              detail: assetMatch
+                ? "Asset is USDC"
+                : `Asset ${asset || "missing"} does not match USDC for ${network} (expected ${expectedAsset})`,
+            });
+
+            // PayTo present
+            const hasPayTo = !!payTo && (payTo.startsWith("0x") || payTo.length >= 32);
+            diagnostics.push({
+              check: "payto_valid",
+              passed: hasPayTo,
+              detail: hasPayTo
+                ? "payTo address present"
+                : "Missing or invalid payTo address",
+            });
+
+            // Resource URL check
+            const resourceObj = parsed.resource as Record<string, unknown> | undefined;
+            const resourceUrl = resourceObj?.url as string | undefined;
+            const hasResourceUrl = !!resourceUrl;
+            diagnostics.push({
+              check: "resource_url",
+              passed: hasResourceUrl,
+              detail: hasResourceUrl
+                ? `Resource URL: ${resourceUrl}`
+                : "Missing resource.url in response body",
+            });
+          }
 
           // Check for bazaar extension — v2 has extensions at top level
           const extensions = parsed.extensions as Record<string, unknown> | undefined;

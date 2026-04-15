@@ -116,10 +116,12 @@ export async function POST(req: NextRequest) {
     );
 
     if (match) {
+      const merchantData = await lookupMerchant(match);
       return NextResponse.json({
         found: true,
         resource: match,
         totalIndexed,
+        merchantResources: merchantData,
       });
     }
 
@@ -139,10 +141,12 @@ export async function POST(req: NextRequest) {
           matchesUrl(item, normalizedInput, inputDomain, inputPath)
         );
         if (found) {
+          const merchantData = await lookupMerchant(found);
           return NextResponse.json({
             found: true,
             resource: found,
             totalIndexed,
+            merchantResources: merchantData,
           });
         }
       }
@@ -152,6 +156,7 @@ export async function POST(req: NextRequest) {
       found: false,
       resource: null,
       totalIndexed,
+      merchantResources: null,
     });
   } catch (error) {
     console.error("Check route error:", error);
@@ -159,5 +164,31 @@ export async function POST(req: NextRequest) {
       { error: "Internal server error" },
       { status: 500 }
     );
+  }
+}
+
+async function lookupMerchant(
+  resource: DiscoveryResource
+): Promise<{ payTo: string; count: number; resources: string[] } | null> {
+  try {
+    // Extract payTo from the first accepts item
+    const payTo = resource.accepts?.[0]?.payTo as string | undefined;
+    if (!payTo) return null;
+
+    const res = await fetch(
+      `https://api.cdp.coinbase.com/platform/v2/x402/discovery/merchant?payTo=${payTo}`,
+      { headers: { Accept: "application/json" } }
+    );
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const resources = (data.resources || []) as { resource: string }[];
+    return {
+      payTo,
+      count: resources.length,
+      resources: resources.map((r) => r.resource),
+    };
+  } catch {
+    return null;
   }
 }

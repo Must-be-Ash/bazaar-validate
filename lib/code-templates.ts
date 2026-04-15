@@ -15,8 +15,8 @@ export interface EndpointConfig {
 }
 
 export const INSTALL_COMMANDS: Record<Stack, string> = {
-  node: "npm install x402-express",
-  go: 'go get github.com/coinbase/x402/go/pkg/gin',
+  node: "npm install @x402/express @x402/core @x402/evm @x402/extensions",
+  go: "go get github.com/coinbase/x402/go/...",
   python: 'pip install "x402[fastapi]"',
 };
 
@@ -38,31 +38,65 @@ export function generateCode(stack: Stack, config: EndpointConfig): string {
 }
 
 function generateNodeCode(c: EndpointConfig): string {
-  const outputBlock = c.outputExample
-    ? `
-        outputSchema: ${c.outputSchema},`
-    : "";
+  const isBodyMethod = ["POST", "PUT", "PATCH"].includes(c.method);
+
+  const discoveryArgs = isBodyMethod
+    ? `{
+            bodyType: "json",
+            input: ${c.inputExample || "{}"},
+            inputSchema: ${c.inputSchema || "{}"},
+            output: {
+              example: ${c.outputExample || "{}"},
+              schema: ${c.outputSchema || "{}"},
+            },
+          }`
+    : `{${c.inputExample ? `
+            input: ${c.inputExample},
+            inputSchema: ${c.inputSchema},` : ""}
+            output: {
+              example: ${c.outputExample || "{}"},
+              schema: ${c.outputSchema || "{}"},
+            },
+          }`;
 
   return `import express from "express";
-import { paymentMiddleware } from "x402-express";
+import { paymentMiddleware } from "@x402/express";
+import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
+import { registerExactEvmScheme } from "@x402/evm/exact/server";
+import {
+  bazaarResourceServerExtension,
+  declareDiscoveryExtension,
+} from "@x402/extensions/bazaar";
 
 const app = express();
 
+// Create facilitator client
+const facilitatorClient = new HTTPFacilitatorClient({
+  url: "https://api.cdp.coinbase.com/platform/v2/x402/facilitator",
+});
+
+// Create resource server and register extensions
+const server = new x402ResourceServer(facilitatorClient);
+registerExactEvmScheme(server);
+server.registerExtension(bazaarResourceServerExtension);
+
+// Configure payment middleware with discovery metadata
 app.use(
   paymentMiddleware(
-    "${c.payTo}",
     {
       "${c.method} ${c.path}": {
-        price: "${c.price}",
-        network: "${c.network}",
-        config: {
-          description: "${c.description}",${outputBlock}
+        accepts: {
+          scheme: "exact",
+          price: "${c.price}",
+          network: "${c.network}",
+          payTo: "${c.payTo}",
+        },
+        extensions: {
+          ...declareDiscoveryExtension(${discoveryArgs}),
         },
       },
     },
-    {
-      url: "https://api.cdp.coinbase.com/platform/v2/x402/facilitator",
-    },
+    server,
   ),
 );
 
@@ -71,105 +105,146 @@ app.${c.method.toLowerCase()}("${c.path}", (req, res) => {
   res.json(${c.outputExample || "{}"});
 });
 
-app.listen(4021, () => {
-  console.log("Server listening at http://localhost:4021");
-});`;
+app.listen(4021);`;
 }
 
 function generateGoCode(c: EndpointConfig): string {
-  const outputSchemaLine = c.outputSchema
-    ? `
-		x402gin.WithOutputSchema(&outputSchema),`
-    : "";
+  const isBodyMethod = ["POST", "PUT", "PATCH"].includes(c.method);
+  const methodConst = `types.Method${c.method}`;
 
-  const outputSchemaVar = c.outputSchema
-    ? `
-	outputSchema := json.RawMessage(\`${c.outputSchema}\`)
-`
-    : "";
+  const inputArgs = isBodyMethod
+    ? `nil, // No query params
+            ${c.inputSchema ? `&types.JSONSchema${c.inputSchema}` : "nil"}, // Input schema
+            "${c.bodyType || "json"}", // Body type`
+    : `nil, // No query params
+            nil, // No input schema
+            "",  // Not a body method`;
 
   return `package main
 
 import (
-	"encoding/json"
-	"math/big"
+    "net/http"
 
-	x402gin "github.com/coinbase/x402/go/pkg/gin"
-	"github.com/coinbase/x402/go/pkg/types"
-	"github.com/gin-gonic/gin"
+    x402 "github.com/coinbase/x402/go"
+    x402http "github.com/coinbase/x402/go/http"
+    ginmw "github.com/coinbase/x402/go/http/gin"
+    evm "github.com/coinbase/x402/go/mechanisms/evm/exact/server"
+    "github.com/coinbase/x402/go/extensions/bazaar"
+    "github.com/coinbase/x402/go/extensions/types"
+    "github.com/gin-gonic/gin"
 )
 
 func main() {
-	r := gin.Default()
+    r := gin.Default()
 
-	facilitatorConfig := &types.FacilitatorConfig{
-		URL: "https://api.cdp.coinbase.com/platform/v2/x402/facilitator",
-	}
-${outputSchemaVar}
-	r.${c.method}(
-		"${c.path}",
-		x402gin.PaymentMiddleware(
-			big.NewFloat(${parsePriceToFloat(c.price)}),
-			"${c.payTo}",
-			x402gin.WithFacilitatorConfig(facilitatorConfig),
-			x402gin.WithDescription("${c.description}"),${outputSchemaLine}
-		),
-		func(c *gin.Context) {
-			c.JSON(200, ${c.outputExample ? `json.RawMessage(\`${c.outputExample}\`)` : `gin.H{"status": "ok"}`})
-		},
-	)
+    // Create discovery extension for the endpoint
+    discoveryExt, _ := bazaar.DeclareDiscoveryExtension(
+        ${methodConst},
+        ${inputArgs}
+        &types.OutputConfig{
+            Example: map[string]interface{}${c.outputExample || "{}"},
+            Schema: types.JSONSchema${c.outputSchema || "{}"},
+        },
+    )
 
-	r.Run(":4021")
-	_ = json.RawMessage{}
+    r.Use(ginmw.X402Payment(ginmw.Config{
+        Routes: x402http.RoutesConfig{
+            "${c.method} ${c.path}": {
+                Scheme:  "exact",
+                PayTo:   "${c.payTo}",
+                Price:   "${c.price}",
+                Network: x402.Network("${c.network}"),
+                Extensions: map[string]interface{}{
+                    types.BAZAAR: discoveryExt,
+                },
+            },
+        },
+        Facilitator: x402http.NewHTTPFacilitatorClient(&x402http.FacilitatorConfig{
+            URL: "https://api.cdp.coinbase.com/platform/v2/x402/facilitator",
+        }),
+        Schemes: []ginmw.SchemeConfig{
+            {Network: x402.Network("${c.network}"), Server: evm.NewExactEvmScheme()},
+        },
+    }))
+
+    r.${c.method}("/weather", func(c *gin.Context) {
+        c.JSON(http.StatusOK, gin.H${c.outputExample || `{"status": "ok"}`})
+    })
+
+    r.Run(":4021")
 }`;
 }
 
 function generatePythonCode(c: EndpointConfig): string {
-  const outputSchemaLine = c.outputSchema
-    ? `
-        output_schema=${c.outputSchema},`
-    : "";
-
-  const inputSchemaBlock =
-    c.inputExample && (c.method === "POST" || c.method === "PUT")
+  const inputBlock =
+    c.inputExample && ["POST", "PUT", "PATCH"].includes(c.method)
       ? `
-        input_schema=HTTPInputSchema(
-            body_type="${c.bodyType}",
-            body_fields=${c.inputSchema || "{}"},
-        ),`
+                    "input": {
+                        "type": "http",
+                        "method": "${c.method}",
+                        "bodyType": "${c.bodyType || "json"}",
+                        "bodyFields": ${c.inputSchema || "{}"},
+                    },`
       : "";
 
-  const importInputSchema =
-    c.inputExample && (c.method === "POST" || c.method === "PUT")
-      ? "\nfrom x402.types import HTTPInputSchema"
-      : "";
+  return `from typing import Any
 
-  return `from fastapi import FastAPI
-from x402.fastapi.middleware import require_payment${importInputSchema}
+from fastapi import FastAPI
+
+from x402.http import FacilitatorConfig, HTTPFacilitatorClient, PaymentOption
+from x402.http.middleware.fastapi import PaymentMiddlewareASGI
+from x402.http.types import RouteConfig
+from x402.mechanisms.evm.exact import ExactEvmServerScheme
+from x402.server import x402ResourceServer
 
 app = FastAPI()
 
-app.middleware("http")(
-    require_payment(
-        price="${c.price}",
-        pay_to_address="${c.payTo}",
-        path="${c.path}",
-        network="${c.network}",
-        description="${c.description}",${outputSchemaLine}${inputSchemaBlock}
-        facilitator_config={"url": "https://api.cdp.coinbase.com/platform/v2/x402/facilitator"},
-    )
+pay_to = "${c.payTo}"
+
+facilitator = HTTPFacilitatorClient(
+    FacilitatorConfig(url="https://api.cdp.coinbase.com/platform/v2/x402/facilitator")
 )
 
-@app.${c.method.toLowerCase()}("${c.path}")
-async def handler():
-    return ${c.outputExample || "{}"}`;
+server = x402ResourceServer(facilitator)
+server.register("${c.network}", ExactEvmServerScheme())
+
+# Define protected routes with discovery metadata
+routes: dict[str, RouteConfig] = {
+    "${c.method} ${c.path}": RouteConfig(
+        accepts=[
+            PaymentOption(
+                scheme="exact",
+                pay_to=pay_to,
+                price="${c.price}",
+                network="${c.network}",
+            ),
+        ],
+        mime_type="application/json",
+        description="${c.description}",
+        extensions={
+            "bazaar": {
+                "info": {${inputBlock}
+                    "output": {
+                        "type": "json",
+                        "example": ${c.outputExample || "{}"},
+                    },
+                },
+            },
+        },
+    ),
 }
 
-function parsePriceToFloat(price: string): string {
-  // Convert "$0.001" to "0.001"
-  const cleaned = price.replace(/^\$/, "");
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? "0.001" : String(num);
+app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
+
+
+@app.${c.method.toLowerCase()}("${c.path}")
+async def handler() -> dict[str, Any]:
+    return ${c.outputExample || "{}"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=4021)`;
 }
 
 export function generateTestPaymentCode(
@@ -179,8 +254,10 @@ export function generateTestPaymentCode(
 ): string {
   switch (stack) {
     case "node":
-      return `// Install: npm install x402
-import { wrapFetchWithPayment } from "x402";
+      return `// See the x402 buyer quickstart:
+// https://github.com/coinbase/x402/tree/main/examples/typescript/clients
+
+import { wrapFetchWithPayment } from "@x402/fetch";
 import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
@@ -200,21 +277,25 @@ const response = await fetchWithPayment("${url}", {
 console.log("Response:", await response.json());`;
 
     case "go":
-      return `// Use curl or any HTTP client to test the x402 flow:
-// 1. First, make an unauthenticated request to get payment requirements:
+      return `// See the x402 Go buyer quickstart:
+// https://github.com/coinbase/x402/tree/main/examples/go/client
+
+// 1. Make an unauthenticated request to get payment requirements:
 //    curl -i ${url}
 //
-// 2. The 402 response will include payment requirements
-// 3. Construct and sign a payment, then send with X-PAYMENT header
+// 2. The 402 response will include payment requirements in the accepts array
+// 3. Construct and sign a payment, then resend with the X-PAYMENT header
 //
-// For a Go client, see the x402 Go SDK documentation.`;
+// For a complete Go client example, see the x402 Go SDK documentation.`;
 
     case "python":
-      return `# Install: pip install x402
+      return `# See the x402 Python buyer quickstart:
+# https://github.com/coinbase/x402/tree/main/examples/python/clients
+
 from x402.client import create_x402_client
 from eth_account import Account
 
-# Create a wallet (or use an existing private key)
+# Create a wallet
 account = Account.from_key("0xYOUR_PRIVATE_KEY")
 
 # Create an x402-enabled HTTP client

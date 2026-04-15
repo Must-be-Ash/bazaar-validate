@@ -1,13 +1,15 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { MerchantData } from "@/lib/diagnostics";
 
 interface ResultsFoundProps {
   resource: Record<string, unknown>;
   totalIndexed: number;
+  merchantResources?: MerchantData | null;
 }
 
-export function ResultsFound({ resource, totalIndexed }: ResultsFoundProps) {
+export function ResultsFound({ resource, totalIndexed, merchantResources }: ResultsFoundProps) {
   const accepts = resource.accepts as
     | Record<string, unknown>[]
     | undefined;
@@ -84,6 +86,21 @@ export function ResultsFound({ resource, totalIndexed }: ResultsFoundProps) {
           </div>
         )}
       </div>
+
+      {merchantResources && merchantResources.count > 1 && (
+        <div className="bg-muted border border-border rounded-lg p-4">
+          <p className="text-sm text-muted-foreground">
+            {merchantResources.count} total endpoint{merchantResources.count !== 1 ? "s" : ""} registered to this wallet
+          </p>
+          <div className="mt-2 space-y-1">
+            {merchantResources.resources.map((r) => (
+              <p key={r} className="text-xs font-mono text-foreground/70 truncate">
+                {r}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
 
       <p className="text-xs text-muted-foreground text-center">
         {totalIndexed} total resources indexed in the Bazaar

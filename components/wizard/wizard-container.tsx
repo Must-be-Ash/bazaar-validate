@@ -25,6 +25,7 @@ interface WizardContainerProps {
   defaultUrl?: string;
   defaultMethod?: string;
   onClose: () => void;
+  onRevalidate?: () => void;
 }
 
 export function WizardContainer({
@@ -32,6 +33,7 @@ export function WizardContainer({
   defaultUrl = "",
   defaultMethod = "GET",
   onClose,
+  onRevalidate,
 }: WizardContainerProps) {
   const [step, setStep] = useState(startStep);
   const [stack, setStack] = useState<Stack | null>(null);
@@ -152,6 +154,7 @@ export function WizardContainer({
               stack={stack}
               endpointUrl={defaultUrl}
               method={config.method}
+              onRevalidate={onRevalidate}
             />
           )}
         </motion.div>
