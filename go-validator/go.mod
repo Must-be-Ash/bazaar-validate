@@ -1,3 +1,3 @@
 module github.com/bazaar-validate/go-validator
 
-go 1.26.2
+go 1.24
