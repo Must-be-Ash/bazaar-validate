@@ -1,37 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Bazaar Validator
 
-## Getting Started
+Check if your x402 endpoint is indexed in the [CDP Bazaar](https://docs.cdp.coinbase.com), diagnose what's wrong if it's not, and get step-by-step setup guidance for your stack.
 
-First, run the development server:
+**Live at [bazaar-validate.vercel.app](https://bazaar-validate.vercel.app)**
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## What it does
+
+1. **Paste your endpoint URL** — we check the CDP Discovery API to see if you're indexed
+2. **If not found** — we probe your endpoint and run 17 validation checks against the x402 v2 spec (HTTPS, 402 status, accepts array, USDC minimum, bazaar extension, discovery metadata, and more)
+3. **See exactly what's wrong** — each check shows pass/fail with expected vs actual values
+4. **Fix it with the wizard** — pick your stack (Node.js/Go/Python), describe your endpoint, and get copy-paste code matching the [bazaar.md](https://github.com/coinbase/x402) docs
+
+## Architecture
+
+```
+Next.js (Vercel)                    Go Server (Fly.io)
+┌──────────────────┐                ┌──────────────────┐
+│ /api/check       │──► CDP API     │ /validate        │
+│ /api/validate ───┼──────────────► │ (17 checks)      │──► user's endpoint
+│ /api/probe       │  (fallback)    │ /health           │
+└──────────────────┘                └──────────────────┘
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The Next.js backend proxies validation requests to the Go server. If the Go server is unavailable, it falls back to Node.js-based checks. The frontend shows which backend performed the validation.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Running locally
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+# Next.js app
+npm install
+npm run dev
+```
 
-## Learn More
+```bash
+# Go validation server (optional — Node.js fallback works without it)
+cd go-validator
+go run main.go
+```
 
-To learn more about Next.js, take a look at the following resources:
+The Go server runs on `:8080` by default. Set `GO_VALIDATOR_URL=http://localhost:8080` in `.env.local` to connect them.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Validation checks
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The Go server (and Node.js fallback) validates:
 
-## Deploy on Vercel
+- URL is HTTPS
+- Endpoint returns 402 (not 200, 401, 403)
+- Response is JSON (not HTML paywall)
+- `x402Version` is 2
+- `accepts` array with valid payment methods
+- Scheme is `exact` or `upto`
+- Network is supported (Base Mainnet / Base Sepolia)
+- Asset is USDC at the correct contract address
+- Amount meets $0.001 minimum (1000 atomic units)
+- `payTo` is a valid address
+- `resource` object with URL
+- `extensions.bazaar` present with `info.output` and `schema`
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deployments
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# bazaar-validate
+| Component | Platform | Config |
+|-----------|----------|--------|
+| Next.js app | Vercel | Auto-deploys on push to `main` |
+| Go server | Fly.io | `cd go-validator && flyctl deploy` |
+
+Set `GO_VALIDATOR_URL` in Vercel env vars to point to the Fly.io URL.
+
+## Project structure
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for a full breakdown of every file, data flow, and how the components connect.
