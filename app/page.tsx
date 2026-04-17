@@ -1,23 +1,86 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { UrlInput } from "@/components/url-input";
 import { ResultsFound } from "@/components/results-found";
-import { ResultsNotFound } from "@/components/results-not-found";
+import { ResultsImplementationInvalid } from "@/components/results-implementation-invalid";
+import { ResultsNeverTried } from "@/components/results-never-tried";
+import { ResultsAwaitingPayment } from "@/components/results-awaiting-payment";
 import { WizardContainer } from "@/components/wizard/wizard-container";
 import { PixelTrail } from "@/components/ui/pixel-trail";
 import { GooeyFilter } from "@/components/ui/gooey-filter";
 import { useScreenSize } from "@/hooks/use-screen-size";
-import { CheckResult, ProbeResult } from "@/lib/diagnostics";
+import { CheckResult, ProbeResult, ResultState, ValidationResult, deriveResultState } from "@/lib/diagnostics";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { FAQ } from "@/components/faq";
 
 type Phase = "idle" | "checking" | "probing" | "done";
-type ResultType = "found" | "not-found" | "error" | null;
+type FallbackReason = "go_unreachable" | "go_timeout" | "go_error" | null;
+
+// extractProbedDefaults pulls the bits of the probed payment requirements
+// the wizard can re-use, so the user doesn't re-type them.
+function extractProbedDefaults(
+  probe: ProbeResult | null,
+): { payTo?: string; network?: string; priceAtomic?: string; description?: string } | undefined {
+  if (!probe?.paymentRequirements) return undefined;
+  const accepts = probe.paymentRequirements.accepts as
+    | Record<string, unknown>[]
+    | undefined;
+  const first = accepts?.[0];
+  if (!first) return undefined;
+  return {
+    payTo: typeof first.payTo === "string" ? first.payTo : undefined,
+    network: typeof first.network === "string" ? first.network : undefined,
+    priceAtomic: typeof first.amount === "string" ? first.amount : undefined,
+    description: typeof first.description === "string" ? first.description : undefined,
+  };
+}
+
+function ValidationSourceBadge({
+  source,
+  fallbackReason,
+  sdkVersion,
+}: {
+  source: "go" | "node";
+  fallbackReason: FallbackReason;
+  sdkVersion?: string;
+}) {
+  const isGo = source === "go";
+  const tooltip = isGo
+    ? sdkVersion
+      ? `x402 Go SDK ${sdkVersion}`
+      : undefined
+    : fallbackReason
+      ? `Go server fallback reason: ${fallbackReason.replace("go_", "")}`
+      : undefined;
+  return (
+    <div
+      className={`text-xs px-3 py-1.5 rounded-md mb-4 inline-block ${
+        isGo
+          ? "bg-success/10 text-success border border-success/30"
+          : "bg-warning/10 text-warning border border-warning/30"
+      }`}
+      title={tooltip}
+    >
+      {isGo
+        ? "Validated with Go SDK"
+        : `Approximate check — ${
+            fallbackReason === "go_unreachable"
+              ? "Go server unreachable"
+              : fallbackReason === "go_timeout"
+                ? "Go server timed out"
+                : fallbackReason === "go_error"
+                  ? "Go server error"
+                  : "Go validation backend unavailable"
+          }`}
+    </div>
+  );
+}
 
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("idle");
-  const [resultType, setResultType] = useState<ResultType>(null);
+  const [resultState, setResultState] = useState<ResultState | null>(null);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,6 +89,9 @@ export default function Home() {
   const [validatedUrl, setValidatedUrl] = useState("");
   const [validatedMethod, setValidatedMethod] = useState("GET");
   const [validationSource, setValidationSource] = useState<"go" | "node" | null>(null);
+  const [fallbackReason, setFallbackReason] = useState<FallbackReason>(null);
+  const [sdkVersion, setSdkVersion] = useState<string | undefined>(undefined);
+  const [autoWatchAfterRevalidate, setAutoWatchAfterRevalidate] = useState(false);
 
   const resultsRef = useRef<HTMLDivElement>(null);
   const screenSize = useScreenSize();
@@ -36,9 +102,9 @@ export default function Home() {
     }, 100);
   }, []);
 
-  const handleValidate = async (url: string, method: string) => {
+  const handleValidate = async (url: string, method: string, opts?: { fromWizard?: boolean }) => {
     setPhase("checking");
-    setResultType(null);
+    setResultState(null);
     setCheckResult(null);
     setProbeResult(null);
     setError(null);
@@ -46,6 +112,8 @@ export default function Home() {
     setValidatedUrl(url);
     setValidatedMethod(method);
     setValidationSource(null);
+    setFallbackReason(null);
+    setAutoWatchAfterRevalidate(!!opts?.fromWizard);
 
     try {
       // Step 1: Check discovery API
@@ -64,15 +132,16 @@ export default function Home() {
       setCheckResult(checkData);
 
       if (checkData.found) {
-        setResultType("found");
+        setResultState(deriveResultState(checkData, null, false));
         setPhase("done");
         scrollToResults();
         return;
       }
 
-      // Step 2: Not found — validate the endpoint (Go backend with Node.js fallback)
+      // Step 2: Not found — validate the endpoint (Go backend with Node.js fallback).
+      // Don't pick a tentative resultState yet; we'd flicker into "implementation_invalid"
+      // for the duration of the probe even when the user is heading to "indexed-after-poll".
       setPhase("probing");
-      setResultType("not-found");
       scrollToResults();
 
       const validateRes = await fetch("/api/validate", {
@@ -86,40 +155,33 @@ export default function Home() {
         throw new Error(err.error || "Failed to validate endpoint");
       }
 
-      const validateData = await validateRes.json();
-      setValidationSource(validateData.source || "node");
-
-      // If Go backend responded, convert its format to ProbeResult for display
-      if (validateData.source === "go") {
-        const goChecks = validateData.checks || [];
-        setProbeResult({
-          reachable: goChecks.some((c: { check: string; passed: boolean }) => c.check === "endpoint_reachable" && c.passed),
-          statusCode: validateData.raw?.statusCode || 0,
-          returns402: goChecks.some((c: { check: string; passed: boolean }) => c.check === "returns_402" && c.passed),
-          paymentRequirements: null,
-          hasBazaarExtension: goChecks.some((c: { check: string; passed: boolean }) => c.check === "has_bazaar_extension" && c.passed),
-          bazaarExtensionData: null,
-          x402Version: 2,
-          rawHeaders: validateData.raw?.headers || {},
-          rawBody: validateData.raw?.body || "",
-          diagnostics: goChecks.map((c: { check: string; passed: boolean; detail: string; expected?: string; actual?: string }) => ({
-            check: c.check,
-            passed: c.passed,
-            detail: c.detail + (c.expected && !c.passed ? ` (expected: ${c.expected}, got: ${c.actual})` : ""),
-          })),
-        });
-      } else {
-        // Node.js fallback — data is already in ProbeResult format
-        setProbeResult(validateData);
-      }
+      const validateData: ValidationResult = await validateRes.json();
+      setValidationSource(validateData.source ?? "node");
+      setFallbackReason(validateData.fallbackReason ?? null);
+      setSdkVersion(validateData.meta?.sdkVersion);
+      setProbeResult(validateData);
+      setResultState(deriveResultState(checkData, validateData, false));
       setPhase("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
-      setResultType("error");
+      setResultState("error");
       setPhase("done");
       scrollToResults();
     }
   };
+
+  // Auto-run validation when ?url=... is in the URL on first render. Lets users
+  // share validation links (e.g. in Discord / issues / docs).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const urlParam = params.get("url");
+    if (!urlParam) return;
+    const methodParam = (params.get("method") ?? "GET").toUpperCase();
+    handleValidate(urlParam, methodParam);
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleOpenWizard = (step?: number) => {
     setShowWizard(true);
@@ -164,20 +226,27 @@ export default function Home() {
             <UrlInput
               onValidate={handleValidate}
               loading={phase === "checking" || phase === "probing"}
+              initialUrl={validatedUrl}
+              initialMethod={validatedMethod}
             />
 
             {/* Loading states */}
             <AnimatePresence mode="wait">
-              {phase === "checking" && (
+              {(phase === "checking" || phase === "probing") && (
                 <motion.div
-                  key="checking"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="flex items-center gap-3 mt-6 text-sm text-muted-foreground"
+                  key={phase}
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.2 }}
+                  className="mt-4 flex items-center justify-center gap-2.5 text-xs text-muted-foreground"
                 >
-                  <div className="w-4 h-4 border-2 border-muted-foreground border-t-transparent rounded-full animate-spin" />
-                  Checking Bazaar...
+                  <div className="w-3 h-3 border-2 border-muted-foreground/60 border-t-transparent rounded-full animate-spin" />
+                  <span className="tabular-nums">
+                    {phase === "checking"
+                      ? "Checking Bazaar"
+                      : "Validating with x402 SDK"}
+                  </span>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -186,7 +255,7 @@ export default function Home() {
           {/* Results */}
           <div ref={resultsRef} className="mt-6">
             <AnimatePresence mode="wait">
-              {resultType === "found" && checkResult?.resource && (
+              {resultState === "indexed" && checkResult?.resource && (
                 <motion.div
                   key="found"
                   initial={{ opacity: 0 }}
@@ -194,16 +263,71 @@ export default function Home() {
                   exit={{ opacity: 0 }}
                 >
                   <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
-                    <ResultsFound
-                      resource={checkResult.resource}
-                      totalIndexed={checkResult.totalIndexed}
-                      merchantResources={checkResult.merchantResources}
-                    />
+                    <ErrorBoundary label="Indexed Result">
+                      <ResultsFound
+                        resource={checkResult.resource}
+                        totalIndexed={checkResult.totalIndexed}
+                        merchantResources={checkResult.merchantResources}
+                        qualitySignals={checkResult.qualitySignals}
+                      />
+                    </ErrorBoundary>
                   </div>
                 </motion.div>
               )}
 
-              {resultType === "not-found" && (
+              {resultState === "awaiting_first_payment" && (
+                <motion.div
+                  key="awaiting"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                >
+                  <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
+                    {validationSource && phase === "done" && (
+                      <ValidationSourceBadge
+                        source={validationSource}
+                        fallbackReason={fallbackReason} sdkVersion={sdkVersion}
+                      />
+                    )}
+                    <ErrorBoundary label="Awaiting First Payment">
+                      <ResultsAwaitingPayment
+                        probeResult={probeResult}
+                        validatedUrl={validatedUrl}
+                        validatedMethod={validatedMethod}
+                        onIndexed={() => handleValidate(validatedUrl, validatedMethod)}
+                        autoWatch={autoWatchAfterRevalidate}
+                      />
+                    </ErrorBoundary>
+                  </div>
+                </motion.div>
+              )}
+
+              {resultState === "never_tried" && (
+                <motion.div
+                  key="never-tried"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                >
+                  <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
+                    {validationSource && phase === "done" && (
+                      <ValidationSourceBadge
+                        source={validationSource}
+                        fallbackReason={fallbackReason} sdkVersion={sdkVersion}
+                      />
+                    )}
+                    <ErrorBoundary label="Never Tried">
+                      <ResultsNeverTried
+                        probeResult={probeResult}
+                        validatedUrl={validatedUrl}
+                        onOpenWizard={handleOpenWizard}
+                      />
+                    </ErrorBoundary>
+                  </div>
+                </motion.div>
+              )}
+
+              {resultState === "implementation_invalid" && (
                 <motion.div
                   key="not-found"
                   initial={{ opacity: 0 }}
@@ -212,28 +336,25 @@ export default function Home() {
                 >
                   <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
                     {validationSource && phase === "done" && (
-                      <div
-                        className={`text-xs px-3 py-1.5 rounded-md mb-4 inline-block ${
-                          validationSource === "go"
-                            ? "bg-success/10 text-success border border-success/30"
-                            : "bg-warning/10 text-warning border border-warning/30"
-                        }`}
-                      >
-                        {validationSource === "go"
-                          ? "Validated with Go SDK"
-                          : "Approximate check (Go validation backend unavailable)"}
-                      </div>
+                      <ValidationSourceBadge
+                        source={validationSource}
+                        fallbackReason={fallbackReason} sdkVersion={sdkVersion}
+                      />
                     )}
-                    <ResultsNotFound
-                      probeResult={probeResult}
-                      probing={phase === "probing"}
-                      onOpenWizard={handleOpenWizard}
-                    />
+                    <ErrorBoundary label="Implementation Invalid">
+                      <ResultsImplementationInvalid
+                        probeResult={probeResult}
+                        probing={phase === "probing"}
+                        onOpenWizard={handleOpenWizard}
+                        domainSiblings={checkResult?.domainSiblings}
+                        validatedUrl={validatedUrl}
+                      />
+                    </ErrorBoundary>
                   </div>
                 </motion.div>
               )}
 
-              {resultType === "error" && error && (
+              {resultState === "error" && error && (
                 <motion.div
                   key="error"
                   initial={{ opacity: 0 }}
@@ -266,16 +387,19 @@ export default function Home() {
                 className="mt-6"
               >
                 <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
-                  <WizardContainer
-                    startStep={wizardStartStep}
-                    defaultUrl={validatedUrl}
-                    defaultMethod={validatedMethod}
-                    onClose={() => setShowWizard(false)}
-                    onRevalidate={() => {
-                      setShowWizard(false);
-                      handleValidate(validatedUrl, validatedMethod);
-                    }}
-                  />
+                  <ErrorBoundary label="Setup Wizard">
+                    <WizardContainer
+                      startStep={wizardStartStep}
+                      defaultUrl={validatedUrl}
+                      defaultMethod={validatedMethod}
+                      probedDefaults={extractProbedDefaults(probeResult)}
+                      onClose={() => setShowWizard(false)}
+                      onRevalidate={() => {
+                        setShowWizard(false);
+                        handleValidate(validatedUrl, validatedMethod, { fromWizard: true });
+                      }}
+                    />
+                  </ErrorBoundary>
                 </div>
               </motion.div>
             )}

@@ -7,13 +7,20 @@ import { cn } from "@/lib/utils";
 interface UrlInputProps {
   onValidate: (url: string, method: string) => void;
   loading: boolean;
+  initialUrl?: string;
+  initialMethod?: string;
 }
 
 const METHODS = ["GET", "POST", "PUT", "DELETE"];
 
-export function UrlInput({ onValidate, loading }: UrlInputProps) {
-  const [url, setUrl] = useState("");
-  const [method, setMethod] = useState("GET");
+export function UrlInput({
+  onValidate,
+  loading,
+  initialUrl = "",
+  initialMethod = "GET",
+}: UrlInputProps) {
+  const [url, setUrl] = useState(initialUrl);
+  const [method, setMethod] = useState(initialMethod);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

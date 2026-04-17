@@ -8,11 +8,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/bazaar-validate/go-validator/internal/discovery"
 )
 
 const defaultPort = "8080"
+const validatorVersion = "0.2.0"
 
 // ValidateRequest is the input from the Next.js backend.
 type ValidateRequest struct {
@@ -36,11 +40,35 @@ type RawResponse struct {
 	Body       string            `json:"body"`
 }
 
-// ValidateResponse is the output sent back to Next.js.
+// Stage represents the result of a single pipeline stage (parse, etc.).
+type Stage struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// SimulateResult mirrors discovery.SimulationResult in the wire shape.
+type SimulateResult struct {
+	Outcome        string `json:"outcome"` // "processing" | "rejected" | "noop"
+	RejectedReason string `json:"rejectedReason,omitempty"`
+	WorkflowIDHint string `json:"workflowIdHint,omitempty"`
+}
+
+// Meta carries provenance info so the UI can show which SDK ran.
+type Meta struct {
+	SDKVersion       string `json:"sdkVersion,omitempty"`
+	ValidatorVersion string `json:"validatorVersion,omitempty"`
+}
+
+// ValidateResponse is the output sent back to Next.js. Three-stage shape:
+// preflight (existing surface checks), parse (SDK extractor), simulate
+// (mirrored facilitator decision tree).
 type ValidateResponse struct {
-	Valid  bool        `json:"valid"`
-	Checks []Check    `json:"checks"`
-	Raw    RawResponse `json:"raw"`
+	Valid     bool           `json:"valid"`
+	Preflight []Check        `json:"preflight"`
+	Parse     Stage          `json:"parse"`
+	Simulate  SimulateResult `json:"simulate"`
+	Raw       RawResponse    `json:"raw"`
+	Meta      Meta           `json:"meta"`
 }
 
 func main() {
@@ -62,7 +90,28 @@ func main() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	meta := currentMeta()
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":           "ok",
+		"sdkVersion":       meta.SDKVersion,
+		"validatorVersion": meta.ValidatorVersion,
+	})
+}
+
+// currentMeta returns the SDK + validator versions baked into this binary.
+// SDK version is read from the build info (the version coinbase/x402/go was
+// resolved to in go.mod).
+func currentMeta() Meta {
+	m := Meta{ValidatorVersion: validatorVersion}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, dep := range info.Deps {
+			if dep.Path == "github.com/coinbase/x402/go" {
+				m.SDKVersion = dep.Version
+				break
+			}
+		}
+	}
+	return m
 }
 
 func handleValidate(w http.ResponseWriter, r *http.Request) {
@@ -88,50 +137,151 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func validate(req ValidateRequest) ValidateResponse {
-	var checks []Check
-	raw := RawResponse{Headers: make(map[string]string)}
+// All check ids that may be emitted by the payment-stage of validation.
+// Used to backfill skipped entries when an upstream stage blocks us.
+var paymentStageCheckIDs = []string{
+	"valid_json",
+	"x402_version",
+	"has_accepts",
+	"accepts[0].scheme",
+	"accepts[0].network",
+	"accepts[0].asset",
+	"accepts[0].amount",
+	"accepts[0].payTo",
+	"accepts[0].maxTimeoutSeconds",
+	"has_resource",
+	"has_bazaar_extension",
+	"bazaar.info",
+	"bazaar.info.output",
+	"bazaar.info.output.example",
+	"bazaar.schema",
+}
 
-	// --- Check: URL is HTTPS ---
-	parsedURL, err := url.Parse(req.URL)
-	if err != nil {
+func appendSkipped(checks []Check, reason string, ids ...string) []Check {
+	for _, id := range ids {
 		checks = append(checks, Check{
-			Check:  "url_valid",
+			Check:  id,
 			Passed: false,
-			Detail: fmt.Sprintf("URL is not valid: %v", err),
+			Detail: "Skipped: " + reason,
 		})
-		return ValidateResponse{Valid: false, Checks: checks, Raw: raw}
+	}
+	return checks
+}
+
+// stageSkipped builds a Stage marker for "we didn't run this stage because
+// an upstream stage already failed."
+func stageSkipped(reason string) Stage {
+	return Stage{OK: false, Error: "Skipped: " + reason}
+}
+
+// validate runs the three-stage validation pipeline:
+//
+//  1. preflight  — surface checks the SDK doesn't run (HTTPS, USDC min, etc.).
+//  2. parse      — SDK extractor: ExtractDiscoveredResourceFromPaymentRequired.
+//  3. simulate   — facilitator decision tree from validate/submitDiscoveryJobIfNeeded.md.
+//
+// Each stage runs only if its prerequisites succeeded; otherwise it's marked
+// Skipped so the UI can show the full pipeline state.
+func validate(req ValidateRequest) ValidateResponse {
+	preflight, bodyBytes, raw, preflightBlocked, hasBazaar := runPreflight(req)
+	resp := ValidateResponse{
+		Preflight: preflight,
+		Raw:       raw,
+		Meta:      currentMeta(),
 	}
 
+	if preflightBlocked {
+		resp.Parse = stageSkipped("preflight checks failed")
+		resp.Simulate = SimulateResult{Outcome: string(discovery.OutcomeNoop)}
+		resp.Valid = false
+		return resp
+	}
+
+	// Stage 2: parse via the SDK.
+	parsed, parseErr := discovery.ParseDiscoveryInfo(bodyBytes)
+	if parseErr != nil {
+		resp.Parse = Stage{OK: false, Error: parseErr.Error()}
+	} else {
+		resp.Parse = Stage{OK: true}
+	}
+
+	// Stage 3: simulate the submit decision tree.
+	sim := discovery.SimulateSubmit(parsed, parseErr, hasBazaar)
+	resp.Simulate = SimulateResult{
+		Outcome:        string(sim.Outcome),
+		RejectedReason: sim.RejectedReason,
+		WorkflowIDHint: sim.WorkflowIDHint,
+	}
+
+	resp.Valid = preflightAllPassed(preflight) && resp.Parse.OK && sim.Outcome == discovery.OutcomeProcessing
+	return resp
+}
+
+func preflightAllPassed(checks []Check) bool {
+	for _, c := range checks {
+		if !c.Passed {
+			return false
+		}
+	}
+	return true
+}
+
+// runPreflight executes the surface-level checks. Returns:
+//   - the populated preflight check list
+//   - the raw response body bytes (nil if probe failed)
+//   - the raw response capture (always populated; status may be 0)
+//   - blocked: true when an upstream failure means we cannot run parse/simulate
+//   - hasBazaar: whether the response body contained an extensions.bazaar object
+func runPreflight(req ValidateRequest) (checks []Check, bodyBytes []byte, raw RawResponse, blocked, hasBazaar bool) {
+	raw = RawResponse{Headers: make(map[string]string)}
+
+	// --- Stage 1: URL parse + HTTPS ---
+	parsedURL, err := url.Parse(req.URL)
+	urlValidPassed := err == nil
+	urlValidDetail := "URL is well-formed"
+	if !urlValidPassed {
+		urlValidDetail = fmt.Sprintf("URL is not valid: %v", err)
+	}
+	checks = append(checks, Check{
+		Check:  "url_valid",
+		Passed: urlValidPassed,
+		Detail: urlValidDetail,
+	})
+
+	if !urlValidPassed {
+		checks = appendSkipped(checks, "URL is not valid", "url_https", "endpoint_reachable", "returns_402")
+		checks = appendSkipped(checks, "URL is not valid", paymentStageCheckIDs...)
+		return checks, nil, raw, true, false
+	}
+
+	httpsOK := parsedURL.Scheme == "https"
 	checks = append(checks, Check{
 		Check:    "url_https",
-		Passed:   parsedURL.Scheme == "https",
-		Detail:   ternary(parsedURL.Scheme == "https", "Resource URL uses HTTPS", "Resource URL must use HTTPS"),
+		Passed:   httpsOK,
+		Detail:   ternary(httpsOK, "Resource URL uses HTTPS", "Resource URL must use HTTPS"),
 		Expected: "https",
 		Actual:   parsedURL.Scheme,
 	})
 
-	if parsedURL.Scheme != "https" {
-		return ValidateResponse{Valid: false, Checks: checks, Raw: raw}
-	}
-
-	// --- Probe the endpoint ---
+	// --- Stage 2: Probe the endpoint ---
 	client := &http.Client{Timeout: 10 * time.Second}
-	httpReq, err := http.NewRequest(req.Method, req.URL, nil)
-	if err != nil {
+	httpReq, reqErr := http.NewRequest(req.Method, req.URL, nil)
+	if reqErr != nil {
 		checks = append(checks, Check{
 			Check:  "endpoint_reachable",
 			Passed: false,
-			Detail: fmt.Sprintf("Failed to create request: %v", err),
+			Detail: fmt.Sprintf("Failed to create request: %v", reqErr),
 		})
-		return ValidateResponse{Valid: false, Checks: checks, Raw: raw}
+		checks = appendSkipped(checks, "endpoint not reachable", "returns_402")
+		checks = appendSkipped(checks, "endpoint not reachable", paymentStageCheckIDs...)
+		return checks, nil, raw, true, false
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		isTimeout := strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline")
-		detail := fmt.Sprintf("Could not reach endpoint: %v", err)
+	resp, doErr := client.Do(httpReq)
+	if doErr != nil {
+		isTimeout := strings.Contains(doErr.Error(), "timeout") || strings.Contains(doErr.Error(), "deadline")
+		detail := fmt.Sprintf("Could not reach endpoint: %v", doErr)
 		if isTimeout {
 			detail = "Endpoint timed out after 10 seconds"
 		}
@@ -140,7 +290,9 @@ func validate(req ValidateRequest) ValidateResponse {
 			Passed: false,
 			Detail: detail,
 		})
-		return ValidateResponse{Valid: false, Checks: checks, Raw: raw}
+		checks = appendSkipped(checks, "endpoint not reachable", "returns_402")
+		checks = appendSkipped(checks, "endpoint not reachable", paymentStageCheckIDs...)
+		return checks, nil, raw, true, false
 	}
 	defer resp.Body.Close()
 
@@ -148,8 +300,7 @@ func validate(req ValidateRequest) ValidateResponse {
 	for k, v := range resp.Header {
 		raw.Headers[k] = strings.Join(v, ", ")
 	}
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ = io.ReadAll(resp.Body)
 	raw.Body = string(bodyBytes)
 
 	checks = append(checks, Check{
@@ -158,7 +309,7 @@ func validate(req ValidateRequest) ValidateResponse {
 		Detail: fmt.Sprintf("Endpoint responded with status %d", resp.StatusCode),
 	})
 
-	// --- Check: Returns 402 ---
+	// --- Stage 3: returns_402 ---
 	returns402 := resp.StatusCode == 402
 	detail402 := "Endpoint correctly returns HTTP 402 Payment Required"
 	if !returns402 {
@@ -180,10 +331,11 @@ func validate(req ValidateRequest) ValidateResponse {
 	})
 
 	if !returns402 {
-		return ValidateResponse{Valid: false, Checks: checks, Raw: raw}
+		checks = appendSkipped(checks, "endpoint did not return 402", paymentStageCheckIDs...)
+		return checks, bodyBytes, raw, true, false
 	}
 
-	// --- Parse JSON body ---
+	// --- Stage 4: parse JSON body ---
 	var body map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		checks = append(checks, Check{
@@ -191,10 +343,24 @@ func validate(req ValidateRequest) ValidateResponse {
 			Passed: false,
 			Detail: "Response body is not valid JSON",
 		})
-		return ValidateResponse{Valid: false, Checks: checks, Raw: raw}
+		toSkip := make([]string, 0, len(paymentStageCheckIDs)-1)
+		for _, id := range paymentStageCheckIDs {
+			if id == "valid_json" {
+				continue
+			}
+			toSkip = append(toSkip, id)
+		}
+		checks = appendSkipped(checks, "response body is not valid JSON", toSkip...)
+		return checks, bodyBytes, raw, true, false
 	}
 
-	// --- Check: x402Version is 2 ---
+	checks = append(checks, Check{
+		Check:  "valid_json",
+		Passed: true,
+		Detail: "Response body parsed as JSON",
+	})
+
+	// --- Stage 5: x402Version is 2 ---
 	version, _ := body["x402Version"].(float64)
 	isV2 := int(version) == 2
 	checks = append(checks, Check{
@@ -205,7 +371,7 @@ func validate(req ValidateRequest) ValidateResponse {
 		Actual:   fmt.Sprintf("%d", int(version)),
 	})
 
-	// --- Check: accepts array ---
+	// --- Stage 6: accepts array ---
 	acceptsRaw, hasAccepts := body["accepts"]
 	acceptsArr, isArr := acceptsRaw.([]interface{})
 	hasValidAccepts := hasAccepts && isArr && len(acceptsArr) > 0
@@ -217,9 +383,18 @@ func validate(req ValidateRequest) ValidateResponse {
 
 	if hasValidAccepts {
 		checks = append(checks, validateAccepts(acceptsArr)...)
+	} else {
+		checks = appendSkipped(checks, "accepts array is missing or empty",
+			"accepts[0].scheme",
+			"accepts[0].network",
+			"accepts[0].asset",
+			"accepts[0].amount",
+			"accepts[0].payTo",
+			"accepts[0].maxTimeoutSeconds",
+		)
 	}
 
-	// --- Check: resource object ---
+	// --- Stage 7: resource object ---
 	resourceObj, hasResource := body["resource"].(map[string]interface{})
 	resourceURL, _ := resourceObj["url"].(string)
 	hasResourceURL := hasResource && resourceURL != ""
@@ -229,7 +404,7 @@ func validate(req ValidateRequest) ValidateResponse {
 		Detail: ternary(hasResourceURL, fmt.Sprintf("Resource URL: %s", resourceURL), "Missing resource object or resource.url field"),
 	})
 
-	// --- Check: extensions.bazaar ---
+	// --- Stage 8: extensions.bazaar ---
 	extensions, _ := body["extensions"].(map[string]interface{})
 	bazaar, hasBazaar := extensions["bazaar"].(map[string]interface{})
 	checks = append(checks, Check{
@@ -240,18 +415,19 @@ func validate(req ValidateRequest) ValidateResponse {
 
 	if hasBazaar {
 		checks = append(checks, validateBazaarExtension(bazaar)...)
+	} else {
+		checks = appendSkipped(checks, "bazaar extension is missing",
+			"bazaar.info",
+			"bazaar.info.output",
+			"bazaar.info.output.example",
+			"bazaar.schema",
+		)
 	}
 
-	// --- Determine overall validity ---
-	allPassed := true
-	for _, c := range checks {
-		if !c.Passed {
-			allPassed = false
-			break
-		}
-	}
-
-	return ValidateResponse{Valid: allPassed, Checks: checks, Raw: raw}
+	// Preflight didn't fully block parse/simulate even if some checks failed —
+	// we want the SDK to attempt parsing whenever the body is valid JSON, since
+	// the user gets useful info from the SDK error messages too.
+	return checks, bodyBytes, raw, false, hasBazaar
 }
 
 // Known USDC contract addresses per network.
@@ -395,7 +571,11 @@ func validateBazaarExtension(bazaar map[string]interface{}) []Check {
 				Passed: hasExample,
 				Detail: ternary(hasExample, "Output example provided", "Missing output example — helps consumers understand your response format"),
 			})
+		} else {
+			checks = appendSkipped(checks, "bazaar info.output is missing", "bazaar.info.output.example")
 		}
+	} else {
+		checks = appendSkipped(checks, "bazaar info block is missing", "bazaar.info.output", "bazaar.info.output.example")
 	}
 
 	// Check for schema block

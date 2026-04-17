@@ -1,15 +1,21 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { MerchantData } from "@/lib/diagnostics";
+import { MerchantData, QualitySignals } from "@/lib/diagnostics";
 
 interface ResultsFoundProps {
   resource: Record<string, unknown>;
   totalIndexed: number;
   merchantResources?: MerchantData | null;
+  qualitySignals?: QualitySignals | null;
 }
 
-export function ResultsFound({ resource, totalIndexed, merchantResources }: ResultsFoundProps) {
+export function ResultsFound({
+  resource,
+  totalIndexed,
+  merchantResources,
+  qualitySignals,
+}: ResultsFoundProps) {
   const accepts = resource.accepts as
     | Record<string, unknown>[]
     | undefined;
@@ -32,6 +38,12 @@ export function ResultsFound({ resource, totalIndexed, merchantResources }: Resu
           <DetailRow
             label="x402 Version"
             value={`v${String(resource.x402Version)}`}
+          />
+        )}
+        {typeof resource.lastUpdated === "string" && (
+          <DetailRow
+            label="Last Updated"
+            value={formatLastUpdated(resource.lastUpdated)}
           />
         )}
 
@@ -75,28 +87,60 @@ export function ResultsFound({ resource, totalIndexed, merchantResources }: Resu
           </div>
         )}
 
-        {resource.qualitySignals != null && (
+        {qualitySignals && (
           <div className="space-y-2">
             <span className="text-xs text-muted-foreground uppercase tracking-wider">
               Quality Signals
             </span>
-            <pre className="bg-card border border-border rounded-md p-3 text-xs overflow-x-auto">
-              {JSON.stringify(resource.qualitySignals, null, 2)}
-            </pre>
+            <div className="bg-card border border-border rounded-md p-3 text-sm space-y-1">
+              <SignalRow
+                label="Description provided"
+                value={qualitySignals.descriptionPresent}
+              />
+              <SignalRow
+                label="Input schema present"
+                value={qualitySignals.inputSchemaPresent}
+              />
+              <SignalRow
+                label="Output schema present"
+                value={qualitySignals.outputSchemaPresent}
+              />
+              <SignalRow
+                label="Dedicated domain"
+                value={qualitySignals.dedicatedDomain}
+                unknownLabel="not yet exposed"
+              />
+              <SignalRow
+                label="Payer count (30d)"
+                value={qualitySignals.payerCount30d}
+                unknownLabel="not yet exposed by API"
+              />
+            </div>
           </div>
         )}
       </div>
 
       {merchantResources && merchantResources.count > 1 && (
         <div className="bg-muted border border-border rounded-lg p-4">
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground mb-2">
             {merchantResources.count} total endpoint{merchantResources.count !== 1 ? "s" : ""} registered to this wallet
           </p>
-          <div className="mt-2 space-y-1">
+          <div className="space-y-1">
             {merchantResources.resources.map((r) => (
-              <p key={r} className="text-xs font-mono text-foreground/70 truncate">
-                {r}
-              </p>
+              <div key={r.resource} className="flex items-center gap-2 text-xs">
+                <a
+                  href={`/?url=${encodeURIComponent(r.resource)}`}
+                  className="font-mono text-foreground/80 hover:text-foreground truncate flex-1"
+                  title="Validate this endpoint"
+                >
+                  {r.resource}
+                </a>
+                {r.lastUpdated && (
+                  <span className="text-muted-foreground whitespace-nowrap">
+                    {ago(r.lastUpdated)}
+                  </span>
+                )}
+              </div>
             ))}
           </div>
         </div>
@@ -106,6 +150,68 @@ export function ResultsFound({ resource, totalIndexed, merchantResources }: Resu
         {totalIndexed} total resources indexed in the Bazaar
       </p>
     </motion.div>
+  );
+}
+
+function ago(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const diffMs = Date.now() - d.getTime();
+    const min = Math.round(diffMs / 60_000);
+    const hr = Math.round(diffMs / 3_600_000);
+    const day = Math.round(diffMs / 86_400_000);
+    if (diffMs < 60_000) return "just now";
+    if (min < 60) return `${min}m ago`;
+    if (hr < 24) return `${hr}h ago`;
+    return `${day}d ago`;
+  } catch {
+    return iso;
+  }
+}
+
+function formatLastUpdated(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const now = Date.now();
+    const diffMs = now - d.getTime();
+    const diffMin = Math.round(diffMs / 60_000);
+    const diffH = Math.round(diffMs / 3_600_000);
+    const diffD = Math.round(diffMs / 86_400_000);
+    if (diffMs < 60_000) return `just now (${d.toISOString()})`;
+    if (diffMin < 60) return `${diffMin}m ago (${d.toISOString()})`;
+    if (diffH < 24) return `${diffH}h ago (${d.toISOString()})`;
+    if (diffD < 30) return `${diffD}d ago (${d.toISOString()})`;
+    return d.toISOString();
+  } catch {
+    return iso;
+  }
+}
+
+function SignalRow({
+  label,
+  value,
+  unknownLabel,
+}: {
+  label: string;
+  value: boolean | number | null;
+  unknownLabel?: string;
+}) {
+  let display: string;
+  let cls = "text-foreground";
+  if (value === null) {
+    display = unknownLabel ?? "—";
+    cls = "text-muted-foreground italic";
+  } else if (typeof value === "number") {
+    display = String(value);
+  } else {
+    display = value ? "yes" : "no";
+    cls = value ? "text-success" : "text-warning";
+  }
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className={`text-sm font-mono ${cls}`}>{display}</span>
+    </div>
   );
 }
 

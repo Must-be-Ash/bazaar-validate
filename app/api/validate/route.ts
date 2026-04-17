@@ -1,9 +1,94 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isRateLimited } from "@/lib/rate-limit";
+import type { ValidationResult, FallbackReason } from "@/lib/diagnostics";
+import type { ValidateRequest, ValidateResponse } from "@/lib/api-contract";
+import { logApi, hostnameOf } from "@/lib/api-log";
 
 const GO_VALIDATOR_URL = process.env.GO_VALIDATOR_URL || "http://localhost:8080";
 
+interface GoCheck {
+  check: string;
+  passed: boolean;
+  detail: string;
+  expected?: string;
+  actual?: string;
+}
+
+interface GoStage {
+  ok: boolean;
+  error?: string;
+}
+
+interface GoSimulate {
+  outcome: "processing" | "rejected" | "noop";
+  rejectedReason?: string;
+  workflowIdHint?: string;
+}
+
+interface GoMeta {
+  sdkVersion?: string;
+  validatorVersion?: string;
+}
+
+interface GoValidateResponse {
+  valid: boolean;
+  preflight: GoCheck[];
+  parse: GoStage;
+  simulate: GoSimulate;
+  raw: { statusCode: number; headers: Record<string, string>; body: string };
+  meta: GoMeta;
+}
+
+// Adapt the Go server's three-stage response into the canonical ValidationResult
+// shape so the frontend never branches on `source`.
+function fromGoResponse(go: GoValidateResponse): ValidationResult {
+  const preflight = go.preflight ?? [];
+  const get = (id: string) => preflight.find((c) => c.check === id);
+  const reachable = !!get("endpoint_reachable")?.passed;
+  const returns402 = !!get("returns_402")?.passed;
+  const hasBazaarExtension = !!get("has_bazaar_extension")?.passed;
+  const x402v = get("x402_version");
+  const x402Version = x402v?.passed ? 2 : null;
+
+  const diagnostics = preflight.map((c) => ({
+    check: c.check,
+    passed: c.passed,
+    detail:
+      c.detail +
+      (c.expected && !c.passed ? ` (expected: ${c.expected}, got: ${c.actual})` : ""),
+  }));
+
+  return {
+    source: "go",
+    reachable,
+    statusCode: go.raw?.statusCode ?? 0,
+    returns402,
+    paymentRequirements: null,
+    hasBazaarExtension,
+    bazaarExtensionData: null,
+    x402Version,
+    rawHeaders: go.raw?.headers ?? {},
+    rawBody: go.raw?.body ?? "",
+    diagnostics,
+    preflight: diagnostics,
+    parse: { ok: !!go.parse?.ok, error: go.parse?.error },
+    simulate: {
+      outcome: (go.simulate?.outcome ?? "noop") as
+        | "processing"
+        | "rejected"
+        | "noop",
+      rejectedReason: go.simulate?.rejectedReason,
+      workflowIdHint: go.simulate?.workflowIdHint,
+    },
+    meta: {
+      sdkVersion: go.meta?.sdkVersion,
+      validatorVersion: go.meta?.validatorVersion,
+    },
+  };
+}
+
 export async function POST(req: NextRequest) {
+  const startedAt = Date.now();
   try {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     if (isRateLimited(ip)) {
@@ -13,7 +98,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const body = await req.json();
+    const body = (await req.json()) as Partial<ValidateRequest>;
     const { url, method = "GET" } = body;
 
     if (!url || typeof url !== "string") {
@@ -24,10 +109,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Check if Go backend is available
-    const goAvailable = await checkGoHealth();
+    const health = await checkGoHealth();
 
-    if (goAvailable) {
-      // Proxy to Go backend
+    if (health.ok) {
       const goRes = await fetch(`${GO_VALIDATOR_URL}/validate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -42,27 +126,55 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const result = await goRes.json();
-      return NextResponse.json({
-        ...result,
+      const goJson = (await goRes.json()) as GoValidateResponse;
+      const result: ValidateResponse = fromGoResponse(goJson);
+      logApi({
+        route: "/api/validate",
+        url,
+        method,
+        hostname: hostnameOf(url),
+        status: 200,
+        durationMs: Date.now() - startedAt,
         source: "go",
+        valid: goJson.valid,
+        simulateOutcome: goJson.simulate?.outcome,
       });
+      return NextResponse.json(result);
     }
 
-    // Fallback: proxy to the existing Node.js probe
+    // Fallback: Node probe. Adapt its existing ProbeResult shape into ValidationResult
+    // by tagging source/fallbackReason.
     const probeRes = await fetch(new URL("/api/probe", req.url), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, method }),
     });
 
-    const probeResult = await probeRes.json();
-    return NextResponse.json({
-      ...probeResult,
+    const probeJson = await probeRes.json();
+    const result: ValidateResponse = {
+      ...(probeJson as ValidationResult),
       source: "node",
+      fallbackReason: health.reason,
+    };
+    logApi({
+      route: "/api/validate",
+      url,
+      method,
+      hostname: hostnameOf(url),
+      status: 200,
+      durationMs: Date.now() - startedAt,
+      source: "node",
+      fallbackReason: health.reason,
     });
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Validate route error:", error);
+    logApi({
+      route: "/api/validate",
+      durationMs: Date.now() - startedAt,
+      status: 500,
+      err: error instanceof Error ? error.message : "unknown",
+    });
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
@@ -70,7 +182,18 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function checkGoHealth(): Promise<boolean> {
+// Cache Go health for 30s (stale-on-error). Avoids paying ~2s per /api/validate
+// call for the health probe when the Go server is healthy. Module-scoped so it
+// persists across requests within the same Next.js process.
+const HEALTH_CACHE_MS = 30_000;
+let healthCache: { ok: boolean; reason: FallbackReason; cachedAt: number } | null =
+  null;
+
+async function checkGoHealth(): Promise<{ ok: boolean; reason: FallbackReason }> {
+  const now = Date.now();
+  if (healthCache && now - healthCache.cachedAt < HEALTH_CACHE_MS) {
+    return { ok: healthCache.ok, reason: healthCache.reason };
+  }
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
@@ -78,8 +201,21 @@ async function checkGoHealth(): Promise<boolean> {
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    return res.ok;
-  } catch {
-    return false;
+    const result = res.ok
+      ? { ok: true, reason: null as FallbackReason }
+      : { ok: false, reason: "go_error" as FallbackReason };
+    healthCache = { ...result, cachedAt: now };
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "";
+    const reason: FallbackReason =
+      msg.includes("abort") || msg.includes("timeout")
+        ? "go_timeout"
+        : "go_unreachable";
+    const result = { ok: false, reason };
+    // Stale-on-error: keep returning failure for the cache window so we don't
+    // hammer the Go server when it's down.
+    healthCache = { ...result, cachedAt: now };
+    return result;
   }
 }

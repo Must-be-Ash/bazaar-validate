@@ -9,8 +9,16 @@ const faqs = [
     a: "Your endpoint needs to: (1) return HTTP 402 to unauthenticated requests, (2) include the bazaar extension in payment requirements, (3) have at least one successful paid transaction through the CDP facilitator. Use the validator above to pinpoint exactly what's missing.",
   },
   {
+    q: "Why does my endpoint say 'awaiting first payment'?",
+    a: "Your implementation passes every check (preflight + SDK parse + simulate-submit), but the CDP facilitator hasn't seen a paid request to it yet. The Bazaar only catalogs an endpoint after the first verify+settle. Trigger a payment via the helper on the awaiting screen and we'll detect indexing within ~30s.",
+  },
+  {
+    q: "How do I trigger my first payment?",
+    a: "When the validator shows 'awaiting first payment', it gives you three options: a copy-paste @x402/fetch Node snippet, a curl confirmation snippet, and manual instructions. The Node snippet is pre-filled with your URL, method, and network. Run it locally with a funded private key.",
+  },
+  {
     q: "How long after my first transaction until I appear?",
-    a: "Typically within a few minutes of your first successful transaction through the CDP facilitator. The discovery index updates frequently.",
+    a: "Typically within ~30 seconds of your first successful transaction through the CDP facilitator. Quality scores (which influence ranking) recalculate periodically — a brand-new endpoint may take a few minutes to reach its steady-state ranking.",
   },
   {
     q: "Do I need to use the CDP facilitator?",

@@ -9,8 +9,6 @@ import { StepMetadata } from "@/components/wizard/step-metadata";
 import { StepCode } from "@/components/wizard/step-code";
 import { StepDeploy } from "@/components/wizard/step-deploy";
 import { GlowButton } from "@/components/ui/glow-button";
-import { ShimmerButton } from "@/components/ui/shimmer-button";
-import { cn } from "@/lib/utils";
 
 const STEPS = [
   "Select Stack",
@@ -24,14 +22,33 @@ interface WizardContainerProps {
   startStep?: number;
   defaultUrl?: string;
   defaultMethod?: string;
+  // Probed values from the user's existing endpoint, if we already validated it.
+  // Used to pre-fill the wizard so the user doesn't re-type things we already
+  // know.
+  probedDefaults?: {
+    payTo?: string;
+    network?: string;
+    priceAtomic?: string; // amount in USDC atomic units (6 decimals)
+    description?: string;
+  };
   onClose: () => void;
   onRevalidate?: () => void;
+}
+
+// formatAtomicUSDCPrice converts an atomic USDC amount string (6 decimals)
+// into the "$X.YYY" format the wizard config uses. Example: "1000" → "$0.001".
+function formatAtomicUSDCPrice(atomic?: string): string | null {
+  if (!atomic) return null;
+  const n = parseInt(atomic, 10);
+  if (Number.isNaN(n) || n <= 0) return null;
+  return `$${(n / 1_000_000).toFixed(6).replace(/\.?0+$/, "")}`;
 }
 
 export function WizardContainer({
   startStep = 0,
   defaultUrl = "",
   defaultMethod = "GET",
+  probedDefaults,
   onClose,
   onRevalidate,
 }: WizardContainerProps) {
@@ -51,10 +68,10 @@ export function WizardContainer({
   const [config, setConfig] = useState<EndpointConfig>({
     method: defaultMethod,
     path: defaultPath,
-    description: "",
-    price: "$0.001",
-    network: "eip155:84532",
-    payTo: "",
+    description: probedDefaults?.description ?? "",
+    price: formatAtomicUSDCPrice(probedDefaults?.priceAtomic) ?? "$0.001",
+    network: probedDefaults?.network ?? "eip155:8453",
+    payTo: probedDefaults?.payTo ?? "",
     outputExample: "",
     outputSchema: "",
     inputExample: "",
@@ -79,37 +96,46 @@ export function WizardContainer({
     }
   };
 
+  const progress = ((step + 1) / STEPS.length) * 100;
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-medium">Setup Wizard</h2>
-        <button
-          onClick={onClose}
-          className="text-muted-foreground hover:text-foreground text-sm"
-        >
-          Close
-        </button>
-      </div>
-
       {/* Progress */}
-      <div className="flex items-center gap-1">
-        {STEPS.map((label, i) => (
-          <button
-            key={i}
-            onClick={() => i <= step && setStep(i)}
-            className={cn(
-              "flex-1 text-center py-2 text-xs transition-colors rounded",
-              i === step
-                ? "bg-accent/20 text-accent"
-                : i < step
-                  ? "bg-success/10 text-success cursor-pointer"
-                  : "bg-muted text-muted-foreground"
-            )}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="space-y-2">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-sm font-medium text-foreground truncate">
+            {STEPS[step]}
+          </span>
+          <div className="flex items-baseline gap-4 shrink-0">
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {String(step + 1).padStart(2, "0")}
+              <span className="text-muted-foreground/50">
+                {" / "}
+                {String(STEPS.length).padStart(2, "0")}
+              </span>
+            </span>
+            <button
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground text-sm"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        <div
+          className="h-px w-full bg-border overflow-hidden"
+          role="progressbar"
+          aria-valuenow={step + 1}
+          aria-valuemin={1}
+          aria-valuemax={STEPS.length}
+        >
+          <motion.div
+            className="h-full bg-foreground/70"
+            initial={false}
+            animate={{ width: `${progress}%` }}
+            transition={{ duration: 0.35, ease: "easeOut" }}
+          />
+        </div>
       </div>
 
       {/* Step content */}
@@ -164,13 +190,10 @@ export function WizardContainer({
       <div className="flex items-center justify-between pt-2">
         <div>
           {step > 0 && (
-            <ShimmerButton onClick={() => setStep(step - 1)}>
+            <GlowButton variant="muted" onClick={() => setStep(step - 1)}>
               Back
-            </ShimmerButton>
+            </GlowButton>
           )}
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {step + 1} / {STEPS.length}
         </div>
         <div>
           {step < STEPS.length - 1 ? (
