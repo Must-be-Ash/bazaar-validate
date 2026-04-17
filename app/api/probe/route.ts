@@ -4,6 +4,7 @@ import {
   parseDiscoveryInfo,
   simulateSubmit,
   hasBazaarExtension as detectBazaarExtension,
+  matchesRouteTemplate,
 } from "@/lib/discovery-validate";
 
 const PROBE_VALIDATOR_VERSION = "0.2.0-node";
@@ -292,7 +293,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (bazaar) {
-      validateBazaarExtension(bazaar, diagnostics);
+      validateBazaarExtension(bazaar, resourceURL, diagnostics);
     } else {
       pushSkipped(diagnostics, "bazaar extension is missing", [
         "bazaar.info",
@@ -436,6 +437,7 @@ function validateAcceptsItem(
 
 function validateBazaarExtension(
   bazaar: Record<string, unknown>,
+  resourceURL: string,
   diagnostics: DiagnosticCheck[],
 ) {
   const info =
@@ -494,4 +496,20 @@ function validateBazaarExtension(
     passed: !!schema,
     detail: schema ? "Bazaar schema present" : "Missing bazaar schema",
   });
+
+  // routeTemplate match — only emit when a template is actually declared.
+  // Stricter than the facilitator (which just stores the concrete URL), but
+  // a mismatch usually signals a developer bug.
+  const routeTemplate =
+    typeof bazaar.routeTemplate === "string" ? bazaar.routeTemplate : "";
+  if (routeTemplate !== "") {
+    const matches = matchesRouteTemplate(routeTemplate, resourceURL);
+    diagnostics.push({
+      check: "bazaar.routeTemplate.matches_resource",
+      passed: matches,
+      detail: matches
+        ? `resource.url "${resourceURL}" matches routeTemplate "${routeTemplate}"`
+        : `resource.url "${resourceURL}" does not match routeTemplate "${routeTemplate}"`,
+    });
+  }
 }

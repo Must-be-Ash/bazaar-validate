@@ -181,6 +181,51 @@ export function simulateSubmit(
   };
 }
 
+// --- routeTemplate matching -----------------------------------------------
+
+// matchesRouteTemplate reports whether resourceURL conforms to a `:param`-style
+// bazaar routeTemplate (e.g. "/users/:userId" matches "/users/123" but not
+// "/products/abc"). Stricter than the facilitator: it just stores whichever
+// concrete URL came in, but a mismatch usually signals a developer bug.
+//
+// Mirror of go-validator/internal/discovery/match.go.
+export function matchesRouteTemplate(template: string, resourceURL: string): boolean {
+  if (template === "") return true;
+  const path = extractPath(resourceURL);
+  if (path === null) return false;
+
+  const tpl = normalizePath(template);
+  const url = normalizePath(path);
+  const segs = tpl.split("/").map((seg) => {
+    if (seg.startsWith(":")) return "([^/]+)";
+    return escapeRegex(seg);
+  });
+  const re = new RegExp("^" + segs.join("/") + "$");
+  return re.test(url);
+}
+
+function extractPath(raw: string): string | null {
+  if (!raw) return null;
+  if (raw.startsWith("/")) return raw;
+  try {
+    const u = new URL(raw);
+    return u.pathname || "/";
+  } catch {
+    return null;
+  }
+}
+
+function normalizePath(p: string): string {
+  if (p.length > 1 && p.endsWith("/")) {
+    return p.replace(/\/+$/, "");
+  }
+  return p;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // --- helpers ----------------------------------------------------------------
 
 function isObject(v: unknown): v is Record<string, unknown> {

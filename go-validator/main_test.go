@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,6 +209,82 @@ func TestValidate_V1PaymentRequirementsDetected(t *testing.T) {
 	}
 	if !strings.Contains(xv.Detail, "1") {
 		t.Logf("x402_version detail: %q", xv.Detail)
+	}
+}
+
+// bodyWithRouteTemplate builds a 402 v2 body whose bazaar extension declares
+// the given routeTemplate and resource.url. Used by the routeTemplate match
+// tests below.
+func bodyWithRouteTemplate(routeTemplate, resourceURL string) string {
+	return fmt.Sprintf(`{
+      "x402Version": 2,
+      "accepts": [{
+        "scheme": "exact",
+        "network": "eip155:84532",
+        "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "amount": "1000",
+        "payTo": "0x0000000000000000000000000000000000000001",
+        "maxTimeoutSeconds": 60
+      }],
+      "resource": { "url": "%s" },
+      "extensions": {
+        "bazaar": {
+          "routeTemplate": "%s",
+          "info": {
+            "input": { "type": "http", "method": "GET" },
+            "output": { "type": "json", "example": { "id": 1 } }
+          },
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object"
+          }
+        }
+      }
+    }`, resourceURL, routeTemplate)
+}
+
+func TestValidate_RouteTemplateMatchesResource_Pass(t *testing.T) {
+	body := bodyWithRouteTemplate("/users/:userId", "https://example.com/users/42")
+	srv := httptest.NewServer(newServingHandler(402, body, "application/json"))
+	defer srv.Close()
+
+	resp := validate(ValidateRequest{URL: srv.URL})
+	c := findCheck(resp.Preflight, "bazaar.routeTemplate.matches_resource")
+	if c == nil {
+		t.Fatal("expected bazaar.routeTemplate.matches_resource to be emitted")
+	}
+	if !c.Passed {
+		t.Fatalf("expected check to pass, got fail: %q", c.Detail)
+	}
+}
+
+func TestValidate_RouteTemplateMatchesResource_Fail(t *testing.T) {
+	body := bodyWithRouteTemplate("/users/:userId", "https://example.com/products/abc")
+	srv := httptest.NewServer(newServingHandler(402, body, "application/json"))
+	defer srv.Close()
+
+	resp := validate(ValidateRequest{URL: srv.URL})
+	c := findCheck(resp.Preflight, "bazaar.routeTemplate.matches_resource")
+	if c == nil {
+		t.Fatal("expected bazaar.routeTemplate.matches_resource to be emitted")
+	}
+	if c.Passed {
+		t.Fatalf("expected check to fail, got pass: %q", c.Detail)
+	}
+	if !strings.Contains(c.Detail, "does not match") {
+		t.Logf("detail: %q", c.Detail)
+	}
+}
+
+func TestValidate_NoRouteTemplate_CheckNotEmitted(t *testing.T) {
+	// happyV2BazaarBody doesn't declare a routeTemplate at all.
+	body := strings.Replace(happyV2BazaarBody, "%s", "https://example.com/x", 1)
+	srv := httptest.NewServer(newServingHandler(402, body, "application/json"))
+	defer srv.Close()
+
+	resp := validate(ValidateRequest{URL: srv.URL})
+	if c := findCheck(resp.Preflight, "bazaar.routeTemplate.matches_resource"); c != nil {
+		t.Fatalf("did not expect routeTemplate check when no template is declared, got %+v", c)
 	}
 }
 

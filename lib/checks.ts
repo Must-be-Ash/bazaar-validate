@@ -202,6 +202,20 @@ const checksList: CheckSpec[] = [
     fixMessage: "Add a JSON Schema under `bazaar.schema` to validate your output structure.",
     snippetKey: "bazaar-schema",
   },
+  {
+    // Stricter than the facilitator: when a routeTemplate is declared, we
+    // require resource.url to actually conform to it. Catches a real bug
+    // class (template/URL drift from copy-paste or framework refactors)
+    // that would silently produce a misleading catalog entry in production.
+    id: "bazaar.routeTemplate.matches_resource",
+    label: "Resource URL matches route template",
+    severity: "blocking",
+    category: "bazaar",
+    wizardStep: STEP_METADATA,
+    fixMessage:
+      "Your resource.url doesn't match the routeTemplate you declared. Either fix the template to match the URL pattern, or fix the URL to conform to the template.",
+    snippetKey: "route-template-mismatch",
+  },
 ];
 
 export const CHECKS: Record<string, CheckSpec> = Object.fromEntries(

@@ -414,7 +414,7 @@ func runPreflight(req ValidateRequest) (checks []Check, bodyBytes []byte, raw Ra
 	})
 
 	if hasBazaar {
-		checks = append(checks, validateBazaarExtension(bazaar)...)
+		checks = append(checks, validateBazaarExtension(bazaar, resourceURL)...)
 	} else {
 		checks = appendSkipped(checks, "bazaar extension is missing",
 			"bazaar.info",
@@ -544,7 +544,7 @@ func validateAccepts(accepts []interface{}) []Check {
 	return checks
 }
 
-func validateBazaarExtension(bazaar map[string]interface{}) []Check {
+func validateBazaarExtension(bazaar map[string]interface{}, resourceURL string) []Check {
 	var checks []Check
 
 	// Check for info block
@@ -586,6 +586,25 @@ func validateBazaarExtension(bazaar map[string]interface{}) []Check {
 		Passed: hasSchema,
 		Detail: ternary(hasSchema, "Bazaar schema present", "Missing bazaar schema — recommended for validation"),
 	})
+
+	// Check that the routeTemplate (if declared) actually matches the resource.url.
+	// Stricter than the facilitator: it just stores whichever URL came in, but a
+	// mismatch usually signals a developer bug — the cataloged template won't
+	// predict the resource path consumers see.
+	if routeTemplate, ok := bazaar["routeTemplate"].(string); ok && routeTemplate != "" {
+		matches := discovery.MatchesRouteTemplate(routeTemplate, resourceURL)
+		detail := fmt.Sprintf("resource.url %q matches routeTemplate %q", resourceURL, routeTemplate)
+		if !matches {
+			detail = fmt.Sprintf("resource.url %q does not match routeTemplate %q", resourceURL, routeTemplate)
+		}
+		checks = append(checks, Check{
+			Check:    "bazaar.routeTemplate.matches_resource",
+			Passed:   matches,
+			Detail:   detail,
+			Expected: routeTemplate,
+			Actual:   resourceURL,
+		})
+	}
 
 	return checks
 }

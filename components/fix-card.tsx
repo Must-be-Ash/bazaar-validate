@@ -81,6 +81,12 @@ server.registerExtension(bazaarResourceServerExtension);
   "properties": { "temperature": { "type": "number" } }
 }`,
   },
+  "route-template-mismatch": {
+    language: "ts",
+    code: `// routeTemplate must match the resource.url shape:
+// \u2713  template: "/users/:userId"   url: "https://x.com/users/123"
+// \u2717  template: "/users/:userId"   url: "https://x.com/products/abc"`,
+  },
 };
 
 export function FixCard({ checkId, detail, onJumpToWizard }: Props) {
