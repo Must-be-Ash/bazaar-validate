@@ -561,21 +561,33 @@ To discover available services, use the `withBazaar` wrapper to extend your faci
 
 ## API Reference
 
-### Discovery Endpoint
+### List Resources Endpoint
 
-Facilitators that support the Bazaar extension expose a discovery endpoint:
+Facilitators that support the Bazaar extension expose a paginated browse endpoint:
 
 ```
 GET {facilitator_url}/discovery/resources
 ```
 
-#### Semantic Search
+Returns resources in browse order (newest first), hard-capped at 1000 results per request. Use `limit` and `offset` to paginate. For semantic search, use the [Search Endpoint](#semantic-search-endpoint) below.
 
-The discovery endpoint supports **semantic search** powered by vector embeddings. When you supply a `query` parameter, the Bazaar matches on meaning rather than exact keywords — so a query like `"current weather conditions"` will find endpoints described as `"real-time meteorological data"`.
+#### Query Parameters
 
-Without a `query`, the endpoint returns a paginated browse listing (newest first).
+| Parameter | Type   | Description                               |
+| --------- | ------ | ----------------------------------------- |
+| `type`    | string | Filter by transport type (e.g. 'http')    |
+| `limit`   | number | Number of resources to return (max: 1000) |
+| `offset`  | number | Offset for pagination (default: 0)        |
 
-#### Search Filters
+### Semantic Search Endpoint
+
+The semantic search endpoint is powered by vector embeddings and matches on meaning rather than exact keywords — so a query like `"current weather conditions"` will find endpoints described as `"real-time meteorological data"`. Results are hard-capped at 20.
+
+```
+GET {facilitator_url}/discovery/search
+```
+
+#### Query Parameters
 
 | Parameter     | Type   | Description                                                            |
 | ------------- | ------ | ---------------------------------------------------------------------- |
@@ -586,8 +598,7 @@ Without a `query`, the endpoint returns a paginated browse listing (newest first
 | `payTo`       | string | Filter by merchant wallet address                                      |
 | `maxUsdPrice` | number | Maximum price in USD (e.g., `0.01`)                                    |
 | `extensions`  | string | Filter by extension support (e.g., `"bazaar"`)                         |
-| `limit`       | number | Number of resources to return (default: 20)                            |
-| `offset`      | number | Offset for pagination (default: 0)                                     |
+| `limit`       | number | Number of resources to return (max: 20)                                |
 
 #### Response Schema
 
@@ -639,31 +650,32 @@ Without a `query`, the endpoint returns a paginated browse listing (newest first
 
 The Bazaar assigns a quality score to each indexed resource. This score influences ranking in both browse and search results.
 
-| Signal                | What It Measures                 | Details                                                                            |
-| --------------------- | -------------------------------- | ---------------------------------------------------------------------------------- |
-| **Usage-based trust** | Real demand from distinct payers | Unique payer count over a 30-day rolling window                                    |
-| **Resource quality**  | Richness of discovery metadata   | Descriptions, input/output schemas, dedicated domains                              |
-| **Anti-spam**         | Domain density controls          | Resources from domains with excessive registrations are down-ranked                |
-| **Composite ranking** | Final sort order                 | Blends semantic relevance (when a `query` is present) with the quality score above |
+| Signal                | What It Measures                 | Details                                                                        |
+| --------------------- | -------------------------------- | ------------------------------------------------------------------------------ |
+| **Usage-based trust** | Real demand from distinct payers | Unique payer count over a 30-day rolling window                                |
+| **Resource quality**  | Richness of discovery metadata   | Descriptions, input/output schemas, dedicated domains                          |
+| **Anti-spam**         | Domain density controls          | Resources from domains with excessive registrations are down-ranked            |
+| **Composite ranking** | Final sort order                 | Blends semantic relevance (on `discovery/search`) with the quality score above |
 
 <Info>
   Quality scores are recalculated periodically. A newly registered endpoint may take a short time to reach its steady-state ranking after its first payments.
 </Info>
 
-### CDP Facilitator Discovery Endpoint
+### CDP Facilitator Discovery Endpoints
 
-The CDP facilitator's discovery endpoint:
+The CDP facilitator exposes both a list and a search endpoint:
 
 ```
 GET https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources
 ```
 
-Adding a `query` parameter (e.g., `?query=weather+forecast`) activates semantic search on this endpoint. Without it, results are returned in browse order.
+Returns a paginated browse listing (newest first), hard-capped at 1000 results. Use `limit` and `offset` to paginate.
 
-<Note>
-  The default limit is 100 results per request. Use pagination parameters to
-  retrieve additional results.
-</Note>
+```
+GET https://api.cdp.coinbase.com/platform/v2/x402/discovery/search
+```
+
+Accepts a `query` parameter (e.g., `?query=weather+forecast`) for semantic search. Results are ranked by semantic relevance blended with quality signals, hard-capped at 20.
 
 ### Merchant Discovery Endpoint
 

@@ -3,24 +3,31 @@ import { isRateLimited } from "@/lib/rate-limit";
 import type { SearchResponse, SearchResultItem } from "@/lib/api-contract";
 import { logApi } from "@/lib/api-log";
 
-const DISCOVERY_API =
-  "https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources";
+// CDP's semantic-search endpoint. This is distinct from /discovery/resources
+// (which is a paginated browse and silently ignores `query`). See
+// build-files/bazaar.md → "Semantic Search Endpoint".
+const SEARCH_API =
+  "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search";
 
 const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 50;
+// /discovery/search is hard-capped at 20 server-side.
+const MAX_LIMIT = 20;
 
-interface DiscoveryItem {
+interface DiscoverySearchItem {
   resource: string;
   type?: string;
   x402Version?: number;
   accepts?: Record<string, unknown>[];
   lastUpdated?: string;
+  description?: string;
   metadata?: Record<string, unknown>;
 }
 
-interface DiscoveryResponse {
-  items: DiscoveryItem[];
-  pagination: { limit: number; offset: number; total: number };
+// The search endpoint returns `{ resources, partialResults }` — not the
+// `{ items, pagination }` shape used by /discovery/resources.
+interface DiscoverySearchResponse {
+  resources?: DiscoverySearchItem[];
+  partialResults?: boolean;
 }
 
 export async function GET(req: NextRequest) {
@@ -44,42 +51,47 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const limitRaw = url.searchParams.get("limit");
-    const offsetRaw = url.searchParams.get("offset");
-    const limit = clampInt(limitRaw, 1, MAX_LIMIT, DEFAULT_LIMIT);
-    const offset = clampInt(offsetRaw, 0, 100_000, 0);
+    const limit = clampInt(url.searchParams.get("limit"), 1, MAX_LIMIT, DEFAULT_LIMIT);
 
     const params = new URLSearchParams();
     params.set("query", query);
     params.set("limit", String(limit));
-    params.set("offset", String(offset));
 
-    const upstream = await fetch(`${DISCOVERY_API}?${params.toString()}`, {
+    // Forward the optional filters the docs expose. Only include those the
+    // caller actually set so we don't over-constrain the query.
+    for (const key of ["network", "asset", "scheme", "payTo", "maxUsdPrice", "extensions"]) {
+      const v = url.searchParams.get(key);
+      if (v) params.set(key, v);
+    }
+
+    const upstream = await fetch(`${SEARCH_API}?${params.toString()}`, {
       headers: { Accept: "application/json" },
     });
 
     if (!upstream.ok) {
       return NextResponse.json(
-        { error: `Discovery API returned ${upstream.status}` },
+        { error: `Discovery search API returned ${upstream.status}` },
         { status: 502 },
       );
     }
 
-    const data = (await upstream.json()) as DiscoveryResponse;
-    const items: SearchResultItem[] = (data.items ?? []).map((it) => ({
+    const data = (await upstream.json()) as DiscoverySearchResponse;
+    const items: SearchResultItem[] = (data.resources ?? []).map((it) => ({
       resource: it.resource,
       type: it.type,
       x402Version: it.x402Version,
       accepts: it.accepts,
       lastUpdated: it.lastUpdated,
+      description: it.description,
       metadata: it.metadata,
     }));
 
     const response: SearchResponse = {
       items,
-      total: data.pagination?.total ?? items.length,
-      limit: data.pagination?.limit ?? limit,
-      offset: data.pagination?.offset ?? offset,
+      total: items.length,
+      limit,
+      offset: 0,
+      partialResults: data.partialResults ?? false,
     };
     logApi({
       route: "/api/search",

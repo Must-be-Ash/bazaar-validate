@@ -105,6 +105,7 @@ function deriveQuery(validatedUrl: string, hint?: string): string {
 }
 
 function describeItem(item: SearchResultItem): string {
+  if (item.description) return item.description;
   const meta = item.metadata as { description?: string } | undefined;
   return meta?.description ?? item.resource;
 }

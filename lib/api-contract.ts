@@ -39,12 +39,20 @@ export interface ProbeRequest {
 }
 export type ProbeResponse = ProbeResult;
 
-// --- GET /api/search (planned, Phase 3) -----------------------------------
-// Proxies the CDP discovery semantic-search endpoint.
+// --- GET /api/search -------------------------------------------------------
+// Proxies the CDP semantic-search endpoint (/discovery/search). Unlike
+// /discovery/resources, this actually honors the `query` param. The upstream
+// response is shaped as { resources, partialResults } and is hard-capped at
+// 20 items with no offset pagination — we normalize that into the shape below.
 export interface SearchRequest {
   query: string;
   limit?: number;
-  offset?: number;
+  network?: string;
+  asset?: string;
+  scheme?: string;
+  payTo?: string;
+  maxUsdPrice?: number;
+  extensions?: string;
 }
 export interface SearchResultItem {
   resource: string;
@@ -52,6 +60,9 @@ export interface SearchResultItem {
   x402Version?: number;
   accepts?: Record<string, unknown>[];
   lastUpdated?: string;
+  // Top-level description is returned directly by /discovery/search.
+  // metadata.description is kept for legacy compatibility.
+  description?: string;
   metadata?: Record<string, unknown>;
 }
 export interface SearchResponse {
@@ -59,4 +70,5 @@ export interface SearchResponse {
   total: number;
   limit: number;
   offset: number;
+  partialResults?: boolean;
 }
