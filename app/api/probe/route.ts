@@ -41,6 +41,26 @@ function pushSkipped(diagnostics: DiagnosticCheck[], reason: string, ids: string
   }
 }
 
+// decodePaymentRequiredHeader looks for the v2 `payment-required` HTTP header
+// (case-insensitive in fetch's Headers, but we're working from a flat object
+// keyed lowercase by `res.headers.forEach`) and base64-decodes it into JSON
+// text. Returns null if missing or not valid base64. Mirrors the SDK helper
+// in validate/helpers.md.
+function decodePaymentRequiredHeader(
+  headers: Record<string, string>,
+): string | null {
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === "payment-required") {
+      try {
+        return Buffer.from(v, "base64").toString("utf8");
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
 const USDC_ADDRESSES: Record<string, string> = {
   "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
   "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
@@ -168,9 +188,14 @@ export async function POST(req: NextRequest) {
       return finalize();
     }
 
+    // --- Effective payload: prefer the v2 `payment-required` header (base64
+    // JSON) over the body. Mirrors the SDK's ExtractPaymentRequiredFromResponse.
+    // @x402/next puts requirements in the header and leaves the body as `{}`.
+    const effectiveBody = decodePaymentRequiredHeader(rawHeaders) ?? rawBody;
+
     // --- Stage 4: parse JSON ---
     const contentType = (rawHeaders["content-type"] || "").toLowerCase();
-    const htmlPaywall = contentType.includes("text/html");
+    const htmlPaywall = contentType.includes("text/html") && effectiveBody === rawBody;
     if (htmlPaywall) {
       diagnostics.push({
         check: "valid_json",
@@ -188,7 +213,7 @@ export async function POST(req: NextRequest) {
 
     let parsed: Record<string, unknown> | null = null;
     try {
-      const candidate = JSON.parse(rawBody);
+      const candidate = JSON.parse(effectiveBody);
       if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
         parsed = candidate as Record<string, unknown>;
       }
@@ -313,9 +338,11 @@ export async function POST(req: NextRequest) {
       };
       let simulateStage: ReturnType<typeof simulateSubmit> = { outcome: "noop" };
       if (reachable && returns402) {
+        // Same precedence as preflight: header decoded if present, else body.
+        const sourceForParse = decodePaymentRequiredHeader(rawHeaders) ?? rawBody;
         let bodyParsed: unknown = null;
         try {
-          bodyParsed = JSON.parse(rawBody);
+          bodyParsed = JSON.parse(sourceForParse);
         } catch {
           // bodyParsed stays null; parseDiscoveryInfo will surface the error
         }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -335,9 +336,18 @@ func runPreflight(req ValidateRequest) (checks []Check, bodyBytes []byte, raw Ra
 		return checks, bodyBytes, raw, true, false
 	}
 
+	// --- Effective payload: prefer the v2 `payment-required` header (base64
+	// JSON) over the body. Mirrors the SDK's ExtractPaymentRequiredFromResponse.
+	// Many v2 servers (including @x402/next) put requirements in the header
+	// and leave the body as `{}`.
+	effective := bodyBytes
+	if headerPayload, ok := decodePaymentRequiredHeader(raw.Headers); ok {
+		effective = headerPayload
+	}
+
 	// --- Stage 4: parse JSON body ---
 	var body map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+	if err := json.Unmarshal(effective, &body); err != nil {
 		checks = append(checks, Check{
 			Check:  "valid_json",
 			Passed: false,
@@ -427,7 +437,29 @@ func runPreflight(req ValidateRequest) (checks []Check, bodyBytes []byte, raw Ra
 	// Preflight didn't fully block parse/simulate even if some checks failed —
 	// we want the SDK to attempt parsing whenever the body is valid JSON, since
 	// the user gets useful info from the SDK error messages too.
-	return checks, bodyBytes, raw, false, hasBazaar
+	// Return `effective` (header-decoded if present, else body) so the SDK
+	// parse stage sees the same v2 payload our preflight saw.
+	return checks, effective, raw, false, hasBazaar
+}
+
+// decodePaymentRequiredHeader looks for the v2 `payment-required` HTTP header
+// (case-insensitive) and base64-decodes its value. Returns the decoded JSON
+// bytes and true on success, or (nil, false) when the header is missing or
+// not valid base64. Mirrors the SDK helper in validate/helpers.md.
+func decodePaymentRequiredHeader(headers map[string]string) ([]byte, bool) {
+	if len(headers) == 0 {
+		return nil, false
+	}
+	for k, v := range headers {
+		if strings.EqualFold(k, "payment-required") {
+			decoded, err := base64.StdEncoding.DecodeString(v)
+			if err != nil {
+				return nil, false
+			}
+			return decoded, true
+		}
+	}
+	return nil, false
 }
 
 // Known USDC contract addresses per network.
