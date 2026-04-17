@@ -3,18 +3,19 @@
 import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Stack, EndpointConfig } from "@/lib/code-templates";
+import { ProbeResult } from "@/lib/diagnostics";
 import { StepStack } from "@/components/wizard/step-stack";
 import { StepEndpoint } from "@/components/wizard/step-endpoint";
 import { StepMetadata } from "@/components/wizard/step-metadata";
-import { StepCode } from "@/components/wizard/step-code";
+import { StepPrompt } from "@/components/wizard/step-prompt";
 import { StepDeploy } from "@/components/wizard/step-deploy";
 import { GlowButton } from "@/components/ui/glow-button";
 
 const STEPS = [
-  "Select Stack",
+  "Select Stack (optional)",
   "Describe Endpoint",
   "Define Metadata",
-  "Generated Code",
+  "Fix-it Prompt",
   "Deploy & Test",
 ];
 
@@ -34,6 +35,11 @@ interface WizardContainerProps {
     outputSchema?: string;  // pretty-printed JSON, when present in probed bazaar
     inputExample?: string;  // pretty-printed JSON, when present in probed bazaar
   };
+  // The full probe result. Threaded into step 4's LLM-prompt so it can
+  // enumerate the failing checks and show the decoded payment-required envelope
+  // verbatim. Optional — wizard works without it (just produces a less-rich
+  // prompt).
+  probeResult?: ProbeResult | null;
   onClose: () => void;
   onRevalidate?: () => void;
 }
@@ -52,6 +58,7 @@ export function WizardContainer({
   defaultUrl = "",
   defaultMethod = "GET",
   probedDefaults,
+  probeResult,
   onClose,
   onRevalidate,
 }: WizardContainerProps) {
@@ -89,16 +96,14 @@ export function WizardContainer({
   const canNext = () => {
     switch (step) {
       case 0:
-        return stack !== null;
+        // Stack is now optional — the LLM-prompt-primary step 4 works
+        // without a selected stack. Picking one just gives the prompt
+        // (and the collapsed code template) extra context.
+        return true;
       case 1:
         return config.path && config.payTo;
       case 2:
         return config.outputExample.trim() !== "";
-      case 3:
-      case 4:
-        // Later steps depend on a selected stack. If the user jumped past
-        // step 0, block "Next" until they pick one inline.
-        return stack !== null;
       default:
         return true;
     }
@@ -183,31 +188,20 @@ export function WizardContainer({
             />
           )}
           {step === 3 && (
-            stack ? (
-              <StepCode stack={stack} config={config} />
-            ) : (
-              <StackPickerFallback
-                label="Pick a stack to generate your code."
-                selected={stack}
-                onSelect={setStack}
-              />
-            )
+            <StepPrompt
+              stack={stack}
+              config={config}
+              probeResult={probeResult ?? null}
+              endpointUrl={defaultUrl}
+            />
           )}
           {step === 4 && (
-            stack ? (
-              <StepDeploy
-                stack={stack}
-                endpointUrl={defaultUrl}
-                method={config.method}
-                onRevalidate={onRevalidate}
-              />
-            ) : (
-              <StackPickerFallback
-                label="Pick a stack to see deploy instructions."
-                selected={stack}
-                onSelect={setStack}
-              />
-            )
+            <StepDeploy
+              stack={stack}
+              endpointUrl={defaultUrl}
+              method={config.method}
+              onRevalidate={onRevalidate}
+            />
           )}
         </motion.div>
       </AnimatePresence>
@@ -240,22 +234,3 @@ export function WizardContainer({
   );
 }
 
-// StackPickerFallback is shown on later steps when the user jumped past the
-// "Select Stack" step without picking one. It lets them pick inline instead
-// of having to navigate back.
-function StackPickerFallback({
-  label,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  selected: Stack | null;
-  onSelect: (stack: Stack) => void;
-}) {
-  return (
-    <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <StepStack selected={selected} onSelect={onSelect} />
-    </div>
-  );
-}

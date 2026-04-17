@@ -515,6 +515,7 @@ export default function Home() {
                       defaultUrl={validatedUrl}
                       defaultMethod={validatedMethod}
                       probedDefaults={extractProbedDefaults(probeResult)}
+                      probeResult={probeResult}
                       onClose={() => setShowWizard(false)}
                       onRevalidate={() => {
                         setShowWizard(false);

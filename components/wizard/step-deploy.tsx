@@ -5,14 +5,17 @@ import { CopyButton } from "@/components/wizard/copy-button";
 import { GlowButton } from "@/components/ui/glow-button";
 
 interface StepDeployProps {
-  stack: Stack;
+  // Optional now that step 1 stack selection is optional. When null, the
+  // test-payment snippet defaults to the @x402/fetch Node snippet (most
+  // universal).
+  stack: Stack | null;
   endpointUrl: string;
   method: string;
   onRevalidate?: () => void;
 }
 
 export function StepDeploy({ stack, endpointUrl, method, onRevalidate }: StepDeployProps) {
-  const testCode = generateTestPaymentCode(stack, endpointUrl, method);
+  const testCode = generateTestPaymentCode(stack ?? "node", endpointUrl, method);
 
   return (
     <div className="space-y-4">
