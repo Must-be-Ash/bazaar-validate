@@ -58,17 +58,25 @@ function fromGoResponse(go: GoValidateResponse): ValidationResult {
       (c.expected && !c.passed ? ` (expected: ${c.expected}, got: ${c.actual})` : ""),
   }));
 
+  // Extract the parsed paymentRequirements from the v2 `payment-required`
+  // header (preferred) or the body (v1 / direct-body endpoints). Lets
+  // downstream UI (FirstPaymentHelper, wizard pre-fill) read accepts[0].
+  const headers = go.raw?.headers ?? {};
+  const body = go.raw?.body ?? "";
+  const paymentRequirements = extractPaymentRequirements(headers, body);
+  const bazaarExtensionData = extractBazaarExtensionData(paymentRequirements);
+
   return {
     source: "go",
     reachable,
     statusCode: go.raw?.statusCode ?? 0,
     returns402,
-    paymentRequirements: null,
+    paymentRequirements,
     hasBazaarExtension,
-    bazaarExtensionData: null,
+    bazaarExtensionData,
     x402Version,
-    rawHeaders: go.raw?.headers ?? {},
-    rawBody: go.raw?.body ?? "",
+    rawHeaders: headers,
+    rawBody: body,
     diagnostics,
     preflight: diagnostics,
     parse: { ok: !!go.parse?.ok, error: go.parse?.error },
@@ -85,6 +93,51 @@ function fromGoResponse(go: GoValidateResponse): ValidationResult {
       validatorVersion: go.meta?.validatorVersion,
     },
   };
+}
+
+// extractPaymentRequirements decodes the v2 `payment-required` header (base64
+// JSON) if present, else parses the response body. Returns null if neither
+// yields a valid object. Mirrors the precedence in go-validator/main.go and
+// app/api/probe/route.ts.
+function extractPaymentRequirements(
+  headers: Record<string, string>,
+  body: string,
+): Record<string, unknown> | null {
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === "payment-required") {
+      try {
+        const decoded = Buffer.from(v, "base64").toString("utf8");
+        const parsed = JSON.parse(decoded);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        // fall through to body
+      }
+    }
+  }
+  if (body) {
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+function extractBazaarExtensionData(
+  pr: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!pr) return null;
+  const ext = pr.extensions;
+  if (!ext || typeof ext !== "object") return null;
+  const bazaar = (ext as Record<string, unknown>).bazaar;
+  if (!bazaar || typeof bazaar !== "object") return null;
+  return bazaar as Record<string, unknown>;
 }
 
 export async function POST(req: NextRequest) {
