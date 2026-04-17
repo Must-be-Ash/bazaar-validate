@@ -22,7 +22,11 @@
 
 # misc
 .DS_Store
+**/.DS_Store
 *.pem
+
+# claude code
+.claude/
 
 # debug
 npm-debug.log*
