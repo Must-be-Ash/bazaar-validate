@@ -13,6 +13,7 @@ import { GooeyFilter } from "@/components/ui/gooey-filter";
 import { useScreenSize } from "@/hooks/use-screen-size";
 import { CheckResult, ProbeResult, ResultState, ValidationResult, deriveResultState } from "@/lib/diagnostics";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { CopyResultButton } from "@/components/copy-result-button";
 import { FAQ } from "@/components/faq";
 
 type Phase = "idle" | "checking" | "probing" | "done";
@@ -56,7 +57,7 @@ function ValidationSourceBadge({
       : undefined;
   return (
     <div
-      className={`text-xs px-3 py-1.5 rounded-md mb-4 inline-block ${
+      className={`text-xs px-3 py-1.5 rounded-md inline-block ${
         isGo
           ? "bg-success/10 text-success border border-success/30"
           : "bg-warning/10 text-warning border border-warning/30"
@@ -94,6 +95,7 @@ export default function Home() {
   const [autoWatchAfterRevalidate, setAutoWatchAfterRevalidate] = useState(false);
 
   const resultsRef = useRef<HTMLDivElement>(null);
+  const wizardRef = useRef<HTMLDivElement>(null);
   const screenSize = useScreenSize();
 
   const scrollToResults = useCallback(() => {
@@ -186,10 +188,21 @@ export default function Home() {
   const handleOpenWizard = (step?: number) => {
     setShowWizard(true);
     setWizardStartStep(step ?? 0);
-    setTimeout(() => {
-      resultsRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, 100);
+    // Scroll is triggered by the effect below once the wizard has mounted,
+    // otherwise the scroll target's position is unknown / stale on tall results cards.
   };
+
+  // Scroll the wizard into view after it mounts. Using rAF + a small delay lets
+  // the AnimatePresence enter animation and layout settle before we measure.
+  useEffect(() => {
+    if (!showWizard) return;
+    const id = window.setTimeout(() => {
+      requestAnimationFrame(() => {
+        wizardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }, 80);
+    return () => window.clearTimeout(id);
+  }, [showWizard, wizardStartStep]);
 
   return (
     <div className="relative min-h-screen flex flex-col">
@@ -263,6 +276,20 @@ export default function Home() {
                   exit={{ opacity: 0 }}
                 >
                   <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
+                    <div className="flex items-start justify-end mb-4">
+                      {phase === "done" && resultState && (
+                        <CopyResultButton
+                          validatedUrl={validatedUrl}
+                          validatedMethod={validatedMethod}
+                          resultState={resultState}
+                          validationSource={validationSource}
+                          sdkVersion={sdkVersion}
+                          fallbackReason={fallbackReason}
+                          probeResult={probeResult}
+                          checkResult={checkResult}
+                        />
+                      )}
+                    </div>
                     <ErrorBoundary label="Indexed Result">
                       <ResultsFound
                         resource={checkResult.resource}
@@ -283,12 +310,28 @@ export default function Home() {
                   exit={{ opacity: 0 }}
                 >
                   <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
-                    {validationSource && phase === "done" && (
-                      <ValidationSourceBadge
-                        source={validationSource}
-                        fallbackReason={fallbackReason} sdkVersion={sdkVersion}
-                      />
-                    )}
+                    <div className="flex items-start justify-between gap-2 flex-wrap mb-4">
+                      <div>
+                        {validationSource && phase === "done" && (
+                          <ValidationSourceBadge
+                            source={validationSource}
+                            fallbackReason={fallbackReason} sdkVersion={sdkVersion}
+                          />
+                        )}
+                      </div>
+                      {phase === "done" && resultState && (
+                        <CopyResultButton
+                          validatedUrl={validatedUrl}
+                          validatedMethod={validatedMethod}
+                          resultState={resultState}
+                          validationSource={validationSource}
+                          sdkVersion={sdkVersion}
+                          fallbackReason={fallbackReason}
+                          probeResult={probeResult}
+                          checkResult={checkResult}
+                        />
+                      )}
+                    </div>
                     <ErrorBoundary label="Awaiting First Payment">
                       <ResultsAwaitingPayment
                         probeResult={probeResult}
@@ -310,12 +353,28 @@ export default function Home() {
                   exit={{ opacity: 0 }}
                 >
                   <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
-                    {validationSource && phase === "done" && (
-                      <ValidationSourceBadge
-                        source={validationSource}
-                        fallbackReason={fallbackReason} sdkVersion={sdkVersion}
-                      />
-                    )}
+                    <div className="flex items-start justify-between gap-2 flex-wrap mb-4">
+                      <div>
+                        {validationSource && phase === "done" && (
+                          <ValidationSourceBadge
+                            source={validationSource}
+                            fallbackReason={fallbackReason} sdkVersion={sdkVersion}
+                          />
+                        )}
+                      </div>
+                      {phase === "done" && resultState && (
+                        <CopyResultButton
+                          validatedUrl={validatedUrl}
+                          validatedMethod={validatedMethod}
+                          resultState={resultState}
+                          validationSource={validationSource}
+                          sdkVersion={sdkVersion}
+                          fallbackReason={fallbackReason}
+                          probeResult={probeResult}
+                          checkResult={checkResult}
+                        />
+                      )}
+                    </div>
                     <ErrorBoundary label="Never Tried">
                       <ResultsNeverTried
                         probeResult={probeResult}
@@ -335,12 +394,28 @@ export default function Home() {
                   exit={{ opacity: 0 }}
                 >
                   <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
-                    {validationSource && phase === "done" && (
-                      <ValidationSourceBadge
-                        source={validationSource}
-                        fallbackReason={fallbackReason} sdkVersion={sdkVersion}
-                      />
-                    )}
+                    <div className="flex items-start justify-between gap-2 flex-wrap mb-4">
+                      <div>
+                        {validationSource && phase === "done" && (
+                          <ValidationSourceBadge
+                            source={validationSource}
+                            fallbackReason={fallbackReason} sdkVersion={sdkVersion}
+                          />
+                        )}
+                      </div>
+                      {phase === "done" && resultState && (
+                        <CopyResultButton
+                          validatedUrl={validatedUrl}
+                          validatedMethod={validatedMethod}
+                          resultState={resultState}
+                          validationSource={validationSource}
+                          sdkVersion={sdkVersion}
+                          fallbackReason={fallbackReason}
+                          probeResult={probeResult}
+                          checkResult={checkResult}
+                        />
+                      )}
+                    </div>
                     <ErrorBoundary label="Implementation Invalid">
                       <ResultsImplementationInvalid
                         probeResult={probeResult}
@@ -381,10 +456,11 @@ export default function Home() {
           <AnimatePresence>
             {showWizard && (
               <motion.div
+                ref={wizardRef}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 20 }}
-                className="mt-6"
+                className="mt-6 scroll-mt-4"
               >
                 <div className="bg-card/80 backdrop-blur-sm border border-border rounded-xl p-6 md:p-8 shadow-lg">
                   <ErrorBoundary label="Setup Wizard">
