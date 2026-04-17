@@ -13,6 +13,16 @@ interface UrlInputProps {
 
 const METHODS = ["GET", "POST", "PUT", "DELETE"];
 
+// normalizeUrl accepts bare hosts like "exa.ai" or "exa.ai/api/search" and
+// prepends "https://" when no scheme is present. If the input already has any
+// scheme (http://, https://, etc.) it is returned unchanged. A leading
+// protocol-relative "//host" is also upgraded to "https://host".
+function normalizeUrl(input: string): string {
+  if (/^[a-z][a-z0-9+\-.]*:\/\//i.test(input)) return input;
+  if (input.startsWith("//")) return `https:${input}`;
+  return `https://${input}`;
+}
+
 export function UrlInput({
   onValidate,
   loading,
@@ -24,9 +34,9 @@ export function UrlInput({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (url.trim()) {
-      onValidate(url.trim(), method);
-    }
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    onValidate(normalizeUrl(trimmed), method);
   };
 
   return (
