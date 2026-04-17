@@ -10,6 +10,13 @@ interface StepMetadataProps {
   inputSchema: string;
   bodyType: string;
   method: string;
+  // Probed endpoint description (from resource.description in the 402
+  // response). Shown as a hint above the Output Example field so the user
+  // remembers what their own endpoint does.
+  probedDescription?: string;
+  // The endpoint URL being fixed — surfaced in the help copy so the user
+  // knows which URL to curl if they need to discover their own response shape.
+  endpointUrl?: string;
   onChange: (field: string, value: string) => void;
 }
 
@@ -27,6 +34,8 @@ export function StepMetadata({
   inputSchema,
   bodyType,
   method,
+  probedDescription,
+  endpointUrl,
   onChange,
 }: StepMetadataProps) {
   const handleOutputExampleChange = (value: string) => {
@@ -53,12 +62,33 @@ export function StepMetadata({
         <label className="text-xs text-muted-foreground mb-1 block">
           Output Example (JSON — what your endpoint returns)
         </label>
+        {probedDescription && (
+          <div className="bg-muted/50 border border-border/50 rounded-md px-3 py-2 mb-2 text-xs">
+            <span className="text-muted-foreground">Your endpoint says: </span>
+            <span className="text-foreground italic">&ldquo;{probedDescription}&rdquo;</span>
+          </div>
+        )}
         <textarea
           value={outputExample}
           onChange={(e) => handleOutputExampleChange(e.target.value)}
           placeholder='{"temperature": 72, "unit": "fahrenheit", "location": "San Francisco"}'
           className={textareaClass}
         />
+        <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+          What JSON does this endpoint return when paid? If you don&apos;t know,
+          hit it once with{" "}
+          <code className="font-mono text-foreground/80">curl</code>{" "}
+          {endpointUrl ? (
+            <>
+              (e.g.{" "}
+              <code className="font-mono text-foreground/80">
+                curl {endpointUrl}
+              </code>
+              ){" "}
+            </>
+          ) : null}
+          after a paid request.
+        </p>
       </div>
 
       <div>

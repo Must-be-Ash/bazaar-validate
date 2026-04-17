@@ -21,20 +21,66 @@ type FallbackReason = "go_unreachable" | "go_timeout" | "go_error" | null;
 
 // extractProbedDefaults pulls the bits of the probed payment requirements
 // the wizard can re-use, so the user doesn't re-type them.
+//
+// Note the field locations in the v2 payment-required envelope:
+//   - payTo / network / amount  → accepts[0].*
+//   - description               → resource.description (NOT accepts[0])
+//   - output example / schema   → extensions.bazaar.info.output.{example, schema}
+//   - input example             → extensions.bazaar.info.input.{queryParams|body}
 function extractProbedDefaults(
   probe: ProbeResult | null,
-): { payTo?: string; network?: string; priceAtomic?: string; description?: string } | undefined {
+):
+  | {
+      payTo?: string;
+      network?: string;
+      priceAtomic?: string;
+      description?: string;
+      outputExample?: string;
+      outputSchema?: string;
+      inputExample?: string;
+    }
+  | undefined {
   if (!probe?.paymentRequirements) return undefined;
-  const accepts = probe.paymentRequirements.accepts as
-    | Record<string, unknown>[]
-    | undefined;
+  const pr = probe.paymentRequirements;
+  const accepts = pr.accepts as Record<string, unknown>[] | undefined;
   const first = accepts?.[0];
-  if (!first) return undefined;
+  const resource = (pr.resource && typeof pr.resource === "object"
+    ? (pr.resource as Record<string, unknown>)
+    : null);
+
+  // Reach into the probed bazaar extension (if present) for example data.
+  const bazaar = probe.bazaarExtensionData ?? null;
+  const info = bazaar && typeof bazaar.info === "object"
+    ? (bazaar.info as Record<string, unknown>)
+    : null;
+  const output = info && typeof info.output === "object"
+    ? (info.output as Record<string, unknown>)
+    : null;
+  const input = info && typeof info.input === "object"
+    ? (info.input as Record<string, unknown>)
+    : null;
+
+  const stringify = (v: unknown): string | undefined => {
+    if (v === undefined || v === null) return undefined;
+    try {
+      return JSON.stringify(v, null, 2);
+    } catch {
+      return undefined;
+    }
+  };
+
   return {
-    payTo: typeof first.payTo === "string" ? first.payTo : undefined,
-    network: typeof first.network === "string" ? first.network : undefined,
-    priceAtomic: typeof first.amount === "string" ? first.amount : undefined,
-    description: typeof first.description === "string" ? first.description : undefined,
+    payTo: typeof first?.payTo === "string" ? first.payTo : undefined,
+    network: typeof first?.network === "string" ? first.network : undefined,
+    priceAtomic: typeof first?.amount === "string" ? first.amount : undefined,
+    description: typeof resource?.description === "string"
+      ? resource.description
+      : typeof first?.description === "string"
+        ? first.description
+        : undefined,
+    outputExample: stringify(output?.example),
+    outputSchema: stringify(output?.schema),
+    inputExample: stringify(input?.queryParams ?? input?.body),
   };
 }
 

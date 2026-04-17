@@ -30,6 +30,9 @@ interface WizardContainerProps {
     network?: string;
     priceAtomic?: string; // amount in USDC atomic units (6 decimals)
     description?: string;
+    outputExample?: string; // pretty-printed JSON, when present in probed bazaar
+    outputSchema?: string;  // pretty-printed JSON, when present in probed bazaar
+    inputExample?: string;  // pretty-printed JSON, when present in probed bazaar
   };
   onClose: () => void;
   onRevalidate?: () => void;
@@ -72,9 +75,9 @@ export function WizardContainer({
     price: formatAtomicUSDCPrice(probedDefaults?.priceAtomic) ?? "$0.001",
     network: probedDefaults?.network ?? "eip155:8453",
     payTo: probedDefaults?.payTo ?? "",
-    outputExample: "",
-    outputSchema: "",
-    inputExample: "",
+    outputExample: probedDefaults?.outputExample ?? "",
+    outputSchema: probedDefaults?.outputSchema ?? "",
+    inputExample: probedDefaults?.inputExample ?? "",
     inputSchema: "",
     bodyType: "json",
   });
@@ -91,6 +94,11 @@ export function WizardContainer({
         return config.path && config.payTo;
       case 2:
         return config.outputExample.trim() !== "";
+      case 3:
+      case 4:
+        // Later steps depend on a selected stack. If the user jumped past
+        // step 0, block "Next" until they pick one inline.
+        return stack !== null;
       default:
         return true;
     }
@@ -169,19 +177,37 @@ export function WizardContainer({
               inputSchema={config.inputSchema}
               bodyType={config.bodyType}
               method={config.method}
+              probedDescription={probedDefaults?.description}
+              endpointUrl={defaultUrl}
               onChange={updateConfig}
             />
           )}
-          {step === 3 && stack && (
-            <StepCode stack={stack} config={config} />
+          {step === 3 && (
+            stack ? (
+              <StepCode stack={stack} config={config} />
+            ) : (
+              <StackPickerFallback
+                label="Pick a stack to generate your code."
+                selected={stack}
+                onSelect={setStack}
+              />
+            )
           )}
-          {step === 4 && stack && (
-            <StepDeploy
-              stack={stack}
-              endpointUrl={defaultUrl}
-              method={config.method}
-              onRevalidate={onRevalidate}
-            />
+          {step === 4 && (
+            stack ? (
+              <StepDeploy
+                stack={stack}
+                endpointUrl={defaultUrl}
+                method={config.method}
+                onRevalidate={onRevalidate}
+              />
+            ) : (
+              <StackPickerFallback
+                label="Pick a stack to see deploy instructions."
+                selected={stack}
+                onSelect={setStack}
+              />
+            )
           )}
         </motion.div>
       </AnimatePresence>
@@ -210,6 +236,26 @@ export function WizardContainer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// StackPickerFallback is shown on later steps when the user jumped past the
+// "Select Stack" step without picking one. It lets them pick inline instead
+// of having to navigate back.
+function StackPickerFallback({
+  label,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  selected: Stack | null;
+  onSelect: (stack: Stack) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <StepStack selected={selected} onSelect={onSelect} />
     </div>
   );
 }
