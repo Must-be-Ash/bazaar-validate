@@ -34,9 +34,8 @@ export function StepPrompt({ stack, config, probeResult, endpointUrl }: StepProm
 
   return (
     <div className="space-y-4">
-      <h3 className="text-base font-medium">Fix-it prompt</h3>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Paste this into ChatGPT / Claude / Cursor / Copilot. It includes every
+        Pass this prompt to your agent. It includes every
         bit of context the model needs to update your code: the protocol spec,
         a link to the full Bazaar docs, your endpoint&apos;s current 402
         response, and exactly what the corrected response should look like.
