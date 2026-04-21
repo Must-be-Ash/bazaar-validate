@@ -10,13 +10,15 @@ Live at `bazaar-validate.vercel.app` (frontend) + `bazaar-go-validator.fly.dev` 
 
 A user pastes their endpoint URL → the tool tells them which of these five states they're in, and walks them out of it:
 
-| State | What it means | What we show |
-|---|---|---|
-| **Indexed** | Endpoint is already in the Bazaar | Resource details, `lastUpdated`, quality signals, other endpoints by the same wallet |
+
+| State                      | What it means                                                                 | What we show                                                                                                     |
+| -------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Indexed**                | Endpoint is already in the Bazaar                                             | Resource details, `lastUpdated`, quality signals, other endpoints by the same wallet                             |
 | **Awaiting first payment** | Implementation is correct but the facilitator hasn't seen a verify+settle yet | First-payment helper (curl / `@x402/fetch` snippet pre-filled with their URL + network) + auto-poll for indexing |
-| **Implementation invalid** | At least one blocking check failed | Per-check fix cards with snippet excerpts + deep-link into the wizard pre-filled with what we already probed |
-| **Never tried** | Endpoint is reachable but has no x402 markers at all | Friendly empty state that auto-opens the setup wizard |
-| **Error** | Couldn't reach our APIs | Plain error card |
+| **Implementation invalid** | At least one blocking check failed                                            | Per-check fix cards with snippet excerpts + deep-link into the wizard pre-filled with what we already probed     |
+| **Never tried**            | Endpoint is reachable but has no x402 markers at all                          | Friendly empty state that auto-opens the setup wizard                                                            |
+| **Error**                  | Couldn't reach our APIs                                                       | Plain error card                                                                                                 |
+
 
 The Bazaar's "endpoint is cataloged on first verify+settle" rule is the source of most "why isn't my endpoint showing up?" confusion — splitting **awaiting first payment** from **implementation invalid** is the single biggest UX improvement.
 
@@ -56,6 +58,20 @@ Both validators (Go primary, Node fallback) run the same 3 stages and emit the s
 3. **Simulate** — Mirror the facilitator's `submitDiscoveryJobIfNeeded` decision tree without touching Temporal. Returns `processing` (would index), `rejected_<reason>` (one of: discovery not enabled / invalid configuration / unsupported transport / validation failed / dynamic-route-no-concrete-URL), or `noop` (no bazaar extension).
 
 The Go server uses the **real x402 Go SDK** as a direct dep, so the parse stage is byte-for-byte the facilitator's behavior. The Node fallback is a literal TS port of the same logic for when the Go server is down.
+
+### How to explain this out loud
+
+Validation runs in three stages.
+
+**First, preflight** — we check all the surface pieces are in place: HTTPS, returns 402, valid JSON, `x402Version: 2`, the `accepts` array has the right scheme/network/USDC asset/amount/payTo/timeout, and the `extensions.bazaar` block is present with info, output example, and schema. 17 checks total. Stuff a human can eyeball.
+
+**Second, parse** — we hand the raw response body to the official Coinbase x402 Go SDK's parser. This is the same parser CDP's indexer uses to ingest endpoints, so if the SDK can't parse it, CDP can't either.
+
+**Third, simulate** — we call the SDK's simulate function, which replays the facilitator's decision tree and tells us whether CDP would `process`, `reject`, or `noop` this endpoint if it scraped it right now.
+
+The key distinction between parse and simulate: **parse** is "is this structurally valid x402?" — **simulate** is "given a valid structure, what would the indexer actually do with it?" An endpoint can parse fine but still get rejected at simulate (e.g. wrong network, missing bazaar extension that the indexer requires).
+
+The punchline: **we're not re-implementing the spec — we're running your endpoint through the actual SDK CDP uses.** That's why the verdict is trustworthy.
 
 ### Result-state derivation
 
