@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const validMethods = ["GET", "POST", "PUT", "DELETE"];
+    const validMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
     const httpMethod = method.toUpperCase();
     if (!validMethods.includes(httpMethod)) {
       return NextResponse.json({ error: "Invalid HTTP method" }, { status: 400 });

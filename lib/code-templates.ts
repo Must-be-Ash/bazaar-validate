@@ -42,7 +42,7 @@ function generateNodeCode(c: EndpointConfig): string {
 
   const discoveryArgs = isBodyMethod
     ? `{
-            bodyType: "json",
+            bodyType: "${c.bodyType || "json"}",
             input: ${c.inputExample || "{}"},
             inputSchema: ${c.inputSchema || "{}"},
             output: {

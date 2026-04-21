@@ -11,7 +11,7 @@ interface UrlInputProps {
   initialMethod?: string;
 }
 
-const METHODS = ["GET", "POST", "PUT", "DELETE"];
+const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
 
 // normalizeUrl accepts bare hosts like "exa.ai" or "exa.ai/api/search" and
 // prepends "https://" when no scheme is present. If the input already has any

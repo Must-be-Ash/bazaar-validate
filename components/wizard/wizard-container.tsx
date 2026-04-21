@@ -34,6 +34,7 @@ interface WizardContainerProps {
     outputExample?: string; // pretty-printed JSON, when present in probed bazaar
     outputSchema?: string;  // pretty-printed JSON, when present in probed bazaar
     inputExample?: string;  // pretty-printed JSON, when present in probed bazaar
+    bodyType?: string;      // body shape input.bodyType, when present
   };
   // The full probe result. Threaded into step 4's LLM-prompt so it can
   // enumerate the failing checks and show the decoded payment-required envelope
@@ -86,7 +87,7 @@ export function WizardContainer({
     outputSchema: probedDefaults?.outputSchema ?? "",
     inputExample: probedDefaults?.inputExample ?? "",
     inputSchema: "",
-    bodyType: "json",
+    bodyType: probedDefaults?.bodyType ?? "json",
   });
 
   const updateConfig = useCallback((field: string, value: string) => {

@@ -38,6 +38,7 @@ function extractProbedDefaults(
       outputExample?: string;
       outputSchema?: string;
       inputExample?: string;
+      bodyType?: string;
     }
   | undefined {
   if (!probe?.paymentRequirements) return undefined;
@@ -81,6 +82,7 @@ function extractProbedDefaults(
     outputExample: stringify(output?.example),
     outputSchema: stringify(output?.schema),
     inputExample: stringify(input?.queryParams ?? input?.body),
+    bodyType: typeof input?.bodyType === "string" ? input.bodyType : undefined,
   };
 }
 
@@ -129,7 +131,7 @@ export default function Home() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [resultState, setResultState] = useState<ResultState | null>(null);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
-  const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
+  const [probeResult, setProbeResult] = useState<ValidationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showWizard, setShowWizard] = useState(false);
   const [wizardStartStep, setWizardStartStep] = useState(0);

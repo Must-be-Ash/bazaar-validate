@@ -52,7 +52,7 @@ export function StepMetadata({
     }
   };
 
-  const showInput = method === "POST" || method === "PUT";
+  const showInput = method === "POST" || method === "PUT" || method === "PATCH";
 
   return (
     <div className="space-y-4">
@@ -117,8 +117,8 @@ export function StepMetadata({
               )}
             >
               <option value="json">JSON</option>
+              <option value="form-data">Form data</option>
               <option value="text">Text</option>
-              <option value="binary">Binary</option>
             </select>
           </div>
 
