@@ -1,5 +1,7 @@
 # Bazaar Validator
 
+> **Not maintained.** x402 and the services this uses may have changed since it was built; check the latest x402 docs before relying on it.
+
 Figure out whether your x402 endpoint is indexed in the [CDP Bazaar](https://docs.cdp.coinbase.com/x402/x402-bazaar) — and if not, exactly why and how to fix it.
 
 **Live at [bazaar-validate.vercel.app](https://bazaar-validate.vercel.app)**
